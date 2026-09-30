@@ -58,6 +58,10 @@ export function downloadTextContent(content: string, filename: string, markdown 
   downloadBlob(new Blob([content], { type: markdown ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8' }), filename);
 }
 
+export function downloadHtmlContent(content: string, filename: string) {
+  downloadBlob(new Blob([content], { type: 'text/html;charset=utf-8' }), filename);
+}
+
 export async function downloadTranscriptLowMemory(
   data: TranscriptFile,
   format: ExportFormat,

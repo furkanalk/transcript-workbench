@@ -93,6 +93,24 @@ export interface DetailedSummaryResult {
   followUps: SummaryPoint[];
 }
 
+
+export type NarrativeSummaryKind = 'overview' | 'discussion' | 'decision' | 'follow-up' | 'conclusion';
+
+export interface NarrativeSummaryParagraph {
+  kind: NarrativeSummaryKind;
+  text: string;
+  references: SearchHit[];
+}
+
+export interface NarrativeSummaryResult {
+  generatedAt: string;
+  mode: SummaryMode;
+  sourceCount: number;
+  segmentCount: number;
+  documentIds: string[];
+  paragraphs: NarrativeSummaryParagraph[];
+}
+
 export interface AnswerResult {
   answer: string;
   confidence: 'strong' | 'moderate' | 'weak' | 'not-found';

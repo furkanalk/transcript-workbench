@@ -1,10 +1,13 @@
 import type {
   AnswerResult,
   DetailedSummaryResult,
+  NarrativeSummaryParagraph,
+  NarrativeSummaryResult,
   Project,
   SearchHit,
   SummaryPoint,
   SummaryResult,
+  SummaryMode,
   TranscriptDocument,
   TranscriptSegment,
 } from './types';
@@ -25,6 +28,9 @@ const POSITIVE_CUES = [
 ];
 
 const FOLLOW_UP_CUES = /(follow[- ]?up|action item|outstanding|open item|pending|need to confirm|need to check|will check|we will check|come back to you|get back to you|provide you with the answer|need to clarify|roadmap|timeline|availability date|not available yet|not supported yet|to be confirmed|tbd|aksiyon|teyit|netleştir|kontrol edip|geri döne|açık konu)/i;
+
+const DECISION_CUES = /(we agreed|agreed that|we decided|decision is|confirmed that|we will use|we are going to|the approach (?:is|will be)|accepted|approved|will proceed|going forward|karar verdik|kararlaştır|mutabık|teyit edildi|kullanacağız|ilerleyeceğiz)/i;
+const DEMONSTRATION_CUES = /(demo|demonstrat|showed|shown|walked through|walkthrough|tested|test(ed|ing)?|configured|implemented|created|deployed|reviewed|presented|göster|demo|test ett|konfigüre|uygula|devreye al)/i;
 
 export function searchProject(project: Project, question: string, limit = 8): SearchHit[] {
   const documents = searchableDocuments(project);
@@ -128,8 +134,8 @@ export function answerQuestion(project: Project, question: string): AnswerResult
   };
 }
 
-export function generateSummary(project: Project, maxPoints = 10): SummaryResult {
-  const documents = searchableDocuments(project);
+export function generateSummary(project: Project, maxPoints = 10, selectedDocumentIds: string[] = []): SummaryResult {
+  const documents = resolveSummaryDocuments(project, selectedDocumentIds);
   const corpus = flattenCorpus(documents);
   return {
     generatedAt: new Date().toISOString(),
@@ -139,8 +145,8 @@ export function generateSummary(project: Project, maxPoints = 10): SummaryResult
   };
 }
 
-export function generateDetailedSummary(project: Project, pointsPerSource = 7): DetailedSummaryResult {
-  const documents = searchableDocuments(project);
+export function generateDetailedSummary(project: Project, pointsPerSource = 7, selectedDocumentIds: string[] = []): DetailedSummaryResult {
+  const documents = resolveSummaryDocuments(project, selectedDocumentIds);
   const corpus = flattenCorpus(documents);
   const sections = documents.map((document) => ({
     documentId: document.id,
@@ -166,6 +172,234 @@ export function generateDetailedSummary(project: Project, pointsPerSource = 7): 
     sections,
     followUps,
   };
+}
+
+export function generateNarrativeSummary(
+  project: Project,
+  mode: SummaryMode,
+  selectedDocumentIds: string[] = [],
+): NarrativeSummaryResult {
+  const documents = resolveSummaryDocuments(project, selectedDocumentIds);
+  const corpus = flattenCorpus(documents);
+  const paragraphLimit = mode === 'general' ? 4 : 10;
+  const points = selectSummaryPoints(documents, mode === 'general' ? 12 : 24, true);
+  const decisionItems = selectCueItems(corpus, DECISION_CUES, mode === 'general' ? 3 : 7);
+  const demonstrationItems = selectCueItems(corpus, DEMONSTRATION_CUES, mode === 'general' ? 4 : 8);
+  const followUpItems = selectCueItems(corpus, FOLLOW_UP_CUES, mode === 'general' ? 4 : 8);
+
+  const paragraphs = mode === 'general'
+    ? buildGeneralNarrative(points, demonstrationItems, decisionItems, followUpItems)
+    : buildDetailedNarrative(documents, points, demonstrationItems, decisionItems, followUpItems);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    mode,
+    sourceCount: documents.length,
+    segmentCount: corpus.length,
+    documentIds: documents.map((document) => document.id),
+    paragraphs: paragraphs.slice(0, paragraphLimit),
+  };
+}
+
+function resolveSummaryDocuments(project: Project, selectedDocumentIds: string[]): TranscriptDocument[] {
+  const sourceDocuments = searchableDocuments(project);
+  if (!selectedDocumentIds.length) return sourceDocuments;
+  const selected = new Set(selectedDocumentIds);
+  const scoped = sourceDocuments.filter((document) => selected.has(document.id));
+  return scoped.length ? scoped : sourceDocuments;
+}
+
+function selectCueItems(corpus: CorpusItem[], cue: RegExp, limit: number): SummaryPoint[] {
+  const candidates = corpus
+    .filter((item) => cue.test(item.segment.text))
+    .map((item) => ({
+      text: compact(contextFor(item.document, item.index), 520),
+      score: 1 + item.segment.confidence,
+      reference: toHit(item.document, item.segment, item.index, 1 + item.segment.confidence),
+    }))
+    .filter((point) => normalizeText(point.text).length >= 45)
+    .filter((point, index, all) => all.findIndex((other) => similarity(normalizeText(other.text), normalizeText(point.text)) > 0.72) === index);
+
+  return candidates.slice(0, limit);
+}
+
+function buildGeneralNarrative(
+  points: SummaryPoint[],
+  demonstrations: SummaryPoint[],
+  decisions: SummaryPoint[],
+  followUps: SummaryPoint[],
+): NarrativeSummaryParagraph[] {
+  const paragraphs: NarrativeSummaryParagraph[] = [];
+  const overviewPoints = points.slice(0, 5);
+  if (overviewPoints.length) {
+    paragraphs.push({
+      kind: 'overview',
+      text: composeNarrativeParagraph(
+        'The selected sessions focused on',
+        overviewPoints,
+        'The discussion covered the main requirements, capabilities and implementation considerations reflected in these topics.',
+      ),
+      references: overviewPoints.map((point) => point.reference),
+    });
+  }
+
+  const activityPoints = uniqueSummaryPoints([...demonstrations, ...points.slice(5, 9)], 5);
+  if (activityPoints.length) {
+    paragraphs.push({
+      kind: 'discussion',
+      text: composeNarrativeParagraph(
+        'During the sessions, the participants reviewed and worked through',
+        activityPoints,
+        'These exchanges captured what was demonstrated, tested, configured or evaluated during the selected transcript scope.',
+      ),
+      references: activityPoints.map((point) => point.reference),
+    });
+  }
+
+  if (decisions.length) {
+    const selected = uniqueSummaryPoints(decisions, 4);
+    paragraphs.push({
+      kind: 'decision',
+      text: composeNarrativeParagraph(
+        'The discussion also recorded agreed directions or confirmed approaches around',
+        selected,
+        'These statements represent the clearest decision-like language found in the transcripts and should still be read in their original context before being treated as formal approval.',
+      ),
+      references: selected.map((point) => point.reference),
+    });
+  }
+
+  if (followUps.length) {
+    const selected = uniqueSummaryPoints(followUps, 5);
+    paragraphs.push({
+      kind: 'follow-up',
+      text: composeNarrativeParagraph(
+        'A number of items remained open or required additional follow-up, including',
+        selected,
+        'These were identified from explicit pending, roadmap, confirmation or return-with-an-answer language in the meeting transcript.',
+      ),
+      references: selected.map((point) => point.reference),
+    });
+  }
+
+  return paragraphs;
+}
+
+function buildDetailedNarrative(
+  documents: TranscriptDocument[],
+  points: SummaryPoint[],
+  demonstrations: SummaryPoint[],
+  decisions: SummaryPoint[],
+  followUps: SummaryPoint[],
+): NarrativeSummaryParagraph[] {
+  const paragraphs: NarrativeSummaryParagraph[] = [];
+  const overview = points.slice(0, 5);
+  if (overview.length) {
+    paragraphs.push({
+      kind: 'overview',
+      text: composeNarrativeParagraph(
+        'Across the selected transcript set, the sessions concentrated on',
+        overview,
+        'The material reflects both requirement clarification and hands-on discussion of how the relevant capabilities would be implemented or operated.',
+      ),
+      references: overview.map((point) => point.reference),
+    });
+  }
+
+  for (const document of documents) {
+    const documentPoints = selectSummaryPoints([document], 5, false);
+    if (!documentPoints.length) continue;
+    paragraphs.push({
+      kind: 'discussion',
+      text: composeNarrativeParagraph(
+        `In ${document.name}, the discussion covered`,
+        documentPoints,
+        'This section captures the main technical subjects and explanations from that part of the meeting without reproducing the conversational back-and-forth.',
+      ),
+      references: documentPoints.map((point) => point.reference),
+    });
+  }
+
+  const activity = uniqueSummaryPoints(demonstrations, 7);
+  if (activity.length) {
+    paragraphs.push({
+      kind: 'discussion',
+      text: composeNarrativeParagraph(
+        'The practical walkthroughs and demonstrations included',
+        activity,
+        'These items represent the strongest evidence of capabilities that were shown, tested, configured or reviewed during the sessions.',
+      ),
+      references: activity.map((point) => point.reference),
+    });
+  }
+
+  const confirmed = uniqueSummaryPoints(decisions, 7);
+  if (confirmed.length) {
+    paragraphs.push({
+      kind: 'decision',
+      text: composeNarrativeParagraph(
+        'Decision-like or explicitly confirmed statements were found around',
+        confirmed,
+        'They indicate the directions agreed or confirmed in the discussion, although the source references should be checked before treating them as final project governance decisions.',
+      ),
+      references: confirmed.map((point) => point.reference),
+    });
+  }
+
+  const open = uniqueSummaryPoints(followUps, 8);
+  if (open.length) {
+    paragraphs.push({
+      kind: 'follow-up',
+      text: composeNarrativeParagraph(
+        'The main unresolved areas and next-step discussions concerned',
+        open,
+        'These items were detected from explicit follow-up, confirmation, pending or roadmap language and therefore represent the strongest candidates for outstanding actions.',
+      ),
+      references: open.map((point) => point.reference),
+    });
+  }
+
+  return paragraphs;
+}
+
+function composeNarrativeParagraph(prefix: string, points: SummaryPoint[], closing: string): string {
+  const statements = points
+    .map((point) => narrativeClause(point.text))
+    .filter(Boolean)
+    .slice(0, 7);
+
+  if (!statements.length) return closing;
+  const joined = joinNaturalList(statements);
+  return `${prefix} ${joined}. ${closing}`.replace(/\s+/g, ' ').trim();
+}
+
+function narrativeClause(value: string): string {
+  let text = value.replace(/\s+/g, ' ').trim();
+  text = text
+    .replace(/^(okay|ok|yeah|yes|right|so|well|basically|actually|i think|we think|you know|by the way)[,.:;!?\s-]+/i, '')
+    .replace(/^(can you|could you|would you|do you|did you|are you|is it|what about)\s+/i, '')
+    .replace(/[?!.]+$/g, '')
+    .trim();
+  if (!text) return '';
+  if (text.length > 210) text = `${text.slice(0, 207).trimEnd()}…`;
+  return text.charAt(0).toLocaleLowerCase('en-US') + text.slice(1);
+}
+
+function joinNaturalList(values: string[]): string {
+  if (values.length === 1) return values[0];
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join('; ')}; and ${values[values.length - 1]}`;
+}
+
+function uniqueSummaryPoints(points: SummaryPoint[], limit: number): SummaryPoint[] {
+  const chosen: SummaryPoint[] = [];
+  for (const point of points) {
+    const normalized = normalizeText(point.text);
+    if (!normalized || chosen.some((other) => similarity(normalized, normalizeText(other.text)) > 0.72)) continue;
+    chosen.push(point);
+    if (chosen.length >= limit) break;
+  }
+  return chosen;
 }
 
 function selectSummaryPoints(documents: TranscriptDocument[], maxPoints: number, diversify: boolean): SummaryPoint[] {

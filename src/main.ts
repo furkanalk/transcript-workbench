@@ -1,12 +1,13 @@
 import './styles.css';
-import { downloadJson, downloadMarkdown, downloadMergedDocuments, downloadTextContent, downloadTranscriptLowMemory, downloadTxt, formatSourceMoment } from './export';
-import { answerQuestion, generateDetailedSummary, generateSummary } from './intelligence';
+import { downloadHtmlContent, downloadJson, downloadMarkdown, downloadMergedDocuments, downloadTextContent, downloadTranscriptLowMemory, downloadTxt, formatSourceMoment } from './export';
+import { answerQuestion, generateDetailedSummary, generateNarrativeSummary, generateSummary } from './intelligence';
 import { formatClock, makeId, mergeTranscriptsAsync, parseTranscript } from './parser';
 import { loadWorkspace, saveWorkspace } from './storage';
 import type {
   AnswerResult,
   AppTab,
   DetailedSummaryResult,
+  NarrativeSummaryResult,
   ConfidenceFilter,
   Project,
   SummaryResult,
@@ -29,6 +30,7 @@ let selectedSegmentId: string | null = null;
 let mergeSelection = new Set<string>();
 let summaryResult: SummaryResult | null = null;
 let detailedSummaryResult: DetailedSummaryResult | null = null;
+let narrativeSummaryResult: NarrativeSummaryResult | null = null;
 let summaryMode: SummaryMode = 'general';
 let exportCleanupEnabled = false;
 let exportReadableEnabled = true;
@@ -90,6 +92,7 @@ function touchProject(project: Project) {
   project.updatedAt = new Date().toISOString();
   summaryResult = null;
   detailedSummaryResult = null;
+  narrativeSummaryResult = null;
   scheduleSave();
 }
 
@@ -443,19 +446,28 @@ function renderCleanSegments(segments: TranscriptSegment[]): string {
 
 function renderSummary(project: Project): string {
   if (!project.documents.length) return emptyMain('Nothing to summarize', 'Add transcript files to the collection first.');
-  if (!summaryResult) summaryResult = generateSummary(project, 10);
-  if (!detailedSummaryResult) detailedSummaryResult = generateDetailedSummary(project, 7);
+  const selectedIds = selectedDocumentIdsForSummary(project);
+  if (!summaryResult) summaryResult = generateSummary(project, 10, selectedIds);
+  if (!detailedSummaryResult) detailedSummaryResult = generateDetailedSummary(project, 7, selectedIds);
+  if (!narrativeSummaryResult || narrativeSummaryResult.mode !== summaryMode) {
+    narrativeSummaryResult = generateNarrativeSummary(project, summaryMode, selectedIds);
+  }
 
   const activeCount = summaryMode === 'general'
     ? summaryResult.points.length
     : detailedSummaryResult.sections.reduce((sum, section) => sum + section.points.length, 0);
+  const selectionCount = project.documents.filter((document) => document.kind === 'source' && mergeSelection.has(document.id)).length;
+  const scopeLabel = selectionCount
+    ? `${selectionCount} selected transcript${selectionCount === 1 ? '' : 's'}`
+    : 'All source transcripts';
 
   return `
     <div class="mx-auto max-w-6xl">
       <div class="flex flex-col gap-4 border-b border-slate-800 pb-5 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <div class="text-lg font-semibold text-white">Transcript Summary</div>
-          <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Local extractive summaries built from the original source transcripts. General gives a compact collection overview; Detailed keeps per-file context and highlights likely follow-up items.</p>
+          <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Local summary synthesis built from the selected source transcripts. General provides an executive-level narrative; Detailed expands the meeting story, source context and likely follow-up items.</p>
+          <div class="mt-2 text-[11px] text-cyan-300/70">Scope: ${scopeLabel} · ${summaryResult.segmentCount.toLocaleString()} segments</div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <div class="flex rounded-lg border border-slate-700 bg-slate-950 p-1 text-xs">
@@ -465,6 +477,7 @@ function renderSummary(project: Project): string {
           <button data-action="regenerate-summary" class="quiet-button">Regenerate</button>
           <button data-action="export-summary" data-format="txt" class="quiet-button">TXT</button>
           <button data-action="export-summary" data-format="md" class="quiet-button">MD</button>
+          <button data-action="export-summary" data-format="html" class="quiet-button">HTML</button>
         </div>
       </div>
 
@@ -474,8 +487,29 @@ function renderSummary(project: Project): string {
         ${metricCard(summaryMode === 'general' ? 'Key points' : 'Detailed points', String(activeCount))}
       </div>
 
-      ${summaryMode === 'general' ? renderGeneralSummary(summaryResult) : renderDetailedSummary(detailedSummaryResult)}
+      ${renderNarrativeSummary(narrativeSummaryResult)}
+      <div class="mt-7">${summaryMode === 'general' ? renderGeneralSummary(summaryResult) : renderDetailedSummary(detailedSummaryResult)}</div>
     </div>
+  `;
+}
+
+function renderNarrativeSummary(result: NarrativeSummaryResult): string {
+  return `
+    <section class="rounded-2xl border border-cyan-900/25 bg-cyan-950/[0.08] p-5">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div class="text-sm font-semibold text-slate-100">Meeting Summary</div>
+          <div class="mt-1 text-[11px] leading-5 text-slate-600">${result.mode === 'general' ? 'Concise narrative of what was discussed, reviewed, decided and left open.' : 'Expanded narrative across the selected meeting scope, with source-aware synthesis.'}</div>
+        </div>
+        <span class="counter-pill">${result.paragraphs.length} paragraphs</span>
+      </div>
+      <div class="mt-4 space-y-4">
+        ${result.paragraphs.length ? result.paragraphs.map((paragraph) => `
+          <p class="text-[15px] leading-8 text-slate-300">${escapeHtml(paragraph.text)}</p>
+        `).join('') : `<p class="text-sm leading-6 text-slate-600">Not enough transcript content was found to produce a useful narrative summary.</p>`}
+      </div>
+      <div class="mt-4 border-t border-white/[0.05] pt-3 text-[10px] leading-5 text-slate-600">Generated locally with extractive and heuristic synthesis. Review source references in the key points and follow-up sections before treating inferred decisions as formal project decisions.</div>
+    </section>
   `;
 }
 
@@ -664,13 +698,16 @@ app.addEventListener('click', (event) => {
   if (action === 'regenerate-summary') {
     const project = getActiveProject();
     if (project) {
-      summaryResult = generateSummary(project, 10);
-      detailedSummaryResult = generateDetailedSummary(project, 7);
+      const selectedIds = selectedDocumentIdsForSummary(project);
+      summaryResult = generateSummary(project, 10, selectedIds);
+      detailedSummaryResult = generateDetailedSummary(project, 7, selectedIds);
+      narrativeSummaryResult = generateNarrativeSummary(project, summaryMode, selectedIds);
     }
     render();
   }
   if (action === 'set-summary-mode') {
     summaryMode = actionElement.dataset.summaryMode === 'detailed' ? 'detailed' : 'general';
+    narrativeSummaryResult = null;
     render();
   }
   if (action === 'export-summary') exportSummary(actionElement.dataset.format ?? 'md');
@@ -689,6 +726,7 @@ app.addEventListener('change', (event) => {
     mergeSelection = new Set();
     summaryResult = null;
     detailedSummaryResult = null;
+    narrativeSummaryResult = null;
     answerResult = null;
     selectedSegmentId = null;
     segmentPage = 0;
@@ -708,6 +746,7 @@ app.addEventListener('change', (event) => {
     if (!id) return;
     if (target.checked) mergeSelection.add(id);
     else mergeSelection.delete(id);
+    invalidateSummaryCache();
     render();
     return;
   }
@@ -849,6 +888,7 @@ function newProject() {
   mergeSelection = new Set();
   summaryResult = null;
   detailedSummaryResult = null;
+  narrativeSummaryResult = null;
   answerResult = null;
   scheduleSave();
   render();
@@ -875,6 +915,7 @@ function deleteProject() {
   mergeSelection = new Set();
   summaryResult = null;
   detailedSummaryResult = null;
+  narrativeSummaryResult = null;
   answerResult = null;
   scheduleSave();
   render();
@@ -959,6 +1000,7 @@ async function mergeSelected(downloadAfterMerge: boolean) {
       project.updatedAt = new Date().toISOString();
       summaryResult = null;
       detailedSummaryResult = null;
+      narrativeSummaryResult = null;
       scheduleSave();
     }
   } catch (error) {
@@ -999,30 +1041,56 @@ function useExample(question: string) {
   render();
 }
 
+function selectedDocumentIdsForSummary(project: Project): string[] {
+  return project.documents
+    .filter((document) => document.kind === 'source' && mergeSelection.has(document.id))
+    .map((document) => document.id);
+}
+
+function invalidateSummaryCache() {
+  summaryResult = null;
+  detailedSummaryResult = null;
+  narrativeSummaryResult = null;
+}
+
 function exportSummary(format: string) {
   const project = getActiveProject();
   if (!project) return;
-  if (!summaryResult) summaryResult = generateSummary(project, 10);
-  if (!detailedSummaryResult) detailedSummaryResult = generateDetailedSummary(project, 7);
+  const selectedIds = selectedDocumentIdsForSummary(project);
+  if (!summaryResult) summaryResult = generateSummary(project, 10, selectedIds);
+  if (!detailedSummaryResult) detailedSummaryResult = generateDetailedSummary(project, 7, selectedIds);
+  if (!narrativeSummaryResult || narrativeSummaryResult.mode !== summaryMode) {
+    narrativeSummaryResult = generateNarrativeSummary(project, summaryMode, selectedIds);
+  }
+
+  const safeName = project.name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'transcript-collection';
+  if (format === 'html') {
+    const html = summaryMode === 'general'
+      ? buildGeneralSummaryHtml(project.name, summaryResult, narrativeSummaryResult)
+      : buildDetailedSummaryHtml(project.name, detailedSummaryResult, narrativeSummaryResult);
+    downloadHtmlContent(html, `${safeName}-${summaryMode}-summary.html`);
+    return;
+  }
 
   const markdown = format === 'md';
   const content = summaryMode === 'general'
-    ? buildGeneralSummaryExport(project.name, summaryResult, markdown)
-    : buildDetailedSummaryExport(project.name, detailedSummaryResult, markdown);
-  const safeName = project.name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'transcript-collection';
+    ? buildGeneralSummaryExport(project.name, summaryResult, narrativeSummaryResult, markdown)
+    : buildDetailedSummaryExport(project.name, detailedSummaryResult, narrativeSummaryResult, markdown);
   downloadTextContent(content, `${safeName}-${summaryMode}-summary.${markdown ? 'md' : 'txt'}`, markdown);
 }
 
-function buildGeneralSummaryExport(name: string, result: SummaryResult, markdown: boolean): string {
+function buildGeneralSummaryExport(name: string, result: SummaryResult, narrative: NarrativeSummaryResult, markdown: boolean): string {
+  const narrativeText = narrative.paragraphs.map((paragraph) => paragraph.text).join('\n\n');
   if (markdown) {
     const points = result.points.map((point, index) => `${index + 1}. ${point.text}\n   - Source: ${point.reference.documentName} · ${formatSourceMoment(point.reference.documentName, point.reference.displayTime)}`).join('\n');
-    return `# General Summary — ${name}\n\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\n${points}\n`;
+    return `# General Summary — ${name}\n\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\n## Meeting Summary\n\n${narrativeText || '_No narrative summary generated._'}\n\n## Key Points\n\n${points || '_No key points found._'}\n`;
   }
   const points = result.points.map((point, index) => `${index + 1}. ${point.text}\n   Source: ${point.reference.documentName} · ${formatSourceMoment(point.reference.documentName, point.reference.displayTime)}`).join('\n\n');
-  return `GENERAL SUMMARY — ${name}\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\n${points}\n`;
+  return `GENERAL SUMMARY — ${name}\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\nMEETING SUMMARY\n${narrativeText || 'No narrative summary generated.'}\n\nKEY POINTS\n${points || 'No key points found.'}\n`;
 }
 
-function buildDetailedSummaryExport(name: string, result: DetailedSummaryResult, markdown: boolean): string {
+function buildDetailedSummaryExport(name: string, result: DetailedSummaryResult, narrative: NarrativeSummaryResult, markdown: boolean): string {
+  const narrativeText = narrative.paragraphs.map((paragraph) => paragraph.text).join('\n\n');
   const followUps = result.followUps.map((point, index) => {
     const source = `${point.reference.documentName} · ${formatSourceMoment(point.reference.documentName, point.reference.displayTime)}`;
     return markdown ? `${index + 1}. ${point.text}\n   - Source: ${source}` : `${index + 1}. ${point.text}\n   Source: ${source}`;
@@ -1039,9 +1107,49 @@ function buildDetailedSummaryExport(name: string, result: DetailedSummaryResult,
   }).join('\n\n');
 
   if (markdown) {
-    return `# Detailed Summary — ${name}\n\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\n## Possible Open / Follow-up Items\n\n${followUps || '_None detected._'}\n\n${sections}\n`;
+    return `# Detailed Summary — ${name}\n\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\n## Meeting Summary\n\n${narrativeText || '_No narrative summary generated._'}\n\n## Possible Open / Follow-up Items\n\n${followUps || '_None detected._'}\n\n## Source Details\n\n${sections}\n`;
   }
-  return `DETAILED SUMMARY — ${name}\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\nPOSSIBLE OPEN / FOLLOW-UP ITEMS\n${followUps || 'None detected.'}\n\n${sections}\n`;
+  return `DETAILED SUMMARY — ${name}\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\nMEETING SUMMARY\n${narrativeText || 'No narrative summary generated.'}\n\nPOSSIBLE OPEN / FOLLOW-UP ITEMS\n${followUps || 'None detected.'}\n\nSOURCE DETAILS\n${sections}\n`;
+}
+
+function buildGeneralSummaryHtml(name: string, result: SummaryResult, narrative: NarrativeSummaryResult): string {
+  const points = result.points.map((point) => `<li><p>${escapeHtml(point.text)}</p><small>${escapeHtml(point.reference.documentName)} · ${escapeHtml(formatSourceMoment(point.reference.documentName, point.reference.displayTime))}</small></li>`).join('');
+  return summaryHtmlDocument(name, 'General Meeting Summary', result.sourceCount, result.segmentCount, narrative, `<section><h2>Key Points</h2><ol>${points}</ol></section>`);
+}
+
+function buildDetailedSummaryHtml(name: string, result: DetailedSummaryResult, narrative: NarrativeSummaryResult): string {
+  const followUps = result.followUps.map((point) => `<li><p>${escapeHtml(point.text)}</p><small>${escapeHtml(point.reference.documentName)} · ${escapeHtml(formatSourceMoment(point.reference.documentName, point.reference.displayTime))}</small></li>`).join('');
+  const sections = result.sections.map((section) => {
+    const points = section.points.map((point) => `<li><p>${escapeHtml(point.text)}</p><small>${escapeHtml(formatSourceMoment(point.reference.documentName, point.reference.displayTime))}</small></li>`).join('');
+    return `<section><h2>${escapeHtml(section.documentName)}</h2><ol>${points}</ol></section>`;
+  }).join('');
+  return summaryHtmlDocument(name, 'Detailed Meeting Summary', result.sourceCount, result.segmentCount, narrative, `<section><h2>Possible Open / Follow-up Items</h2><ol>${followUps || '<li>None detected.</li>'}</ol></section>${sections}`);
+}
+
+function summaryHtmlDocument(
+  name: string,
+  title: string,
+  sourceCount: number,
+  segmentCount: number,
+  narrative: NarrativeSummaryResult,
+  extraContent: string,
+): string {
+  const paragraphs = narrative.paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph.text)}</p>`).join('');
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(title)} — ${escapeHtml(name)}</title>
+<style>body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:920px;margin:48px auto;padding:0 24px;color:#172033;line-height:1.7}h1{font-size:30px;margin-bottom:6px}h2{margin-top:34px;font-size:19px}.meta{color:#667085;font-size:14px;margin-bottom:32px}.narrative{font-size:16px;background:#f7f9fc;border:1px solid #e5e9f0;border-radius:14px;padding:20px 24px}.narrative p{margin:0 0 16px}.narrative p:last-child{margin-bottom:0}li{margin-bottom:14px}li p{margin:0}small{color:#667085}section{margin-top:28px}@media print{body{margin:0;max-width:none}.narrative{break-inside:avoid}}</style>
+</head>
+<body>
+<h1>${escapeHtml(title)}</h1>
+<div class="meta">${escapeHtml(name)} · ${sourceCount} sources · ${segmentCount.toLocaleString()} segments</div>
+<section><h2>Meeting Summary</h2><div class="narrative">${paragraphs || '<p>No narrative summary generated.</p>'}</div></section>
+${extraContent}
+</body>
+</html>`;
 }
 
 function exportDocument(format: string) {
@@ -1063,11 +1171,13 @@ function selectAllDocuments() {
   // "Select all" intentionally means original/source files only. Including a large
   // generated merge would duplicate the same transcript data and can explode memory.
   mergeSelection = new Set(project.documents.filter((document) => document.kind === 'source').map((document) => document.id));
+  invalidateSummaryCache();
   render();
 }
 
 function deselectAllDocuments() {
   mergeSelection.clear();
+  invalidateSummaryCache();
   render();
 }
 
