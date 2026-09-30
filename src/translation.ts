@@ -50,7 +50,7 @@ const SECTION_TITLES_TR: Record<string, string> = {
   'Cross-Cutting Risks & Architectural Considerations': 'Genel Riskler ve Mimari Değerlendirmeler',
   'Decisions & Agreed Direction': 'Kararlar ve Mutabık Kalınan Yön',
   'Outstanding Questions & Follow-up Actions': 'Açık Sorular ve Takip Aksiyonları',
-  'Outstanding Items & Recommended Next Steps': 'Açık Konular ve Önerilen Sonraki Adımlar',
+  'Outstanding Items & Next Steps': 'Açık Konular ve Sonraki Adımlar',
   'Outstanding Items': 'Açık Konular',
   'Main Topics Discussed': 'Görüşülen Ana Konular',
   'Key Outcomes': 'Temel Sonuçlar',
@@ -63,6 +63,7 @@ const SUBSECTION_TITLES_TR: Record<string, string> = {
   'Requirement & Current State': 'Gereksinim ve Mevcut Durum',
   'Assessment & Considerations': 'Değerlendirme ve Dikkate Alınması Gerekenler',
   'Implementation Options': 'Uygulama Seçenekleri',
+  'Recommendations / Preferred Approach': 'Öneriler / Tercih Edilen Yaklaşım',
   'Decisions / Agreed Direction': 'Kararlar / Mutabık Kalınan Yön',
   'Open Points': 'Açık Konular',
 };

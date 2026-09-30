@@ -113,7 +113,23 @@ export interface NarrativeSummaryResult {
 export type SummaryMode = 'general' | 'detailed' | 'report';
 export type SummaryLanguage = 'original' | 'en' | 'tr';
 export type ReportSectionKind = 'overview' | 'discussion' | 'technical' | 'decision' | 'risk' | 'follow-up' | 'takeaway';
-export type ReportSubsectionKind = 'requirement' | 'current-state' | 'assessment' | 'options' | 'decision' | 'risk' | 'open-item' | 'evidence';
+export type ReportSubsectionKind = 'requirement' | 'current-state' | 'assessment' | 'options' | 'recommendation' | 'decision' | 'risk' | 'open-item' | 'evidence';
+export type ClaimValidationStatus = 'evidence-linked' | 'review-needed';
+
+export interface ClaimValidation {
+  status: ClaimValidationStatus;
+  score: number;
+  evidenceCount: number;
+  reason?: string;
+}
+
+export interface ReportValidationSummary {
+  candidateClaims: number;
+  includedClaims: number;
+  omittedClaims: number;
+  reviewNeededClaims: number;
+}
+
 
 export interface ReportReference {
   id: number;
@@ -128,11 +144,13 @@ export interface ReportReference {
 export interface ReportParagraph {
   text: string;
   referenceIds: number[];
+  validation: ClaimValidation;
 }
 
 export interface ReportBullet {
   text: string;
   referenceIds: number[];
+  validation: ClaimValidation;
 }
 
 export interface ReportSubsection {
@@ -166,6 +184,7 @@ export interface MeetingReport {
   openItems: ReportBullet[];
   references: ReportReference[];
   wordCount: number;
+  validation: ReportValidationSummary;
 }
 
 export interface AnswerResult {

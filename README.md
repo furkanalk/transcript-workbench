@@ -120,3 +120,12 @@ Every push to `main` builds the Vite application and deploys `dist/` to GitHub P
 ## Privacy
 
 Transcript files are handled locally in the browser. Do not commit customer transcripts, meeting exports, credentials, or other confidential data to the repository.
+
+
+### Enterprise report safeguards
+
+- Strict evidence gate for generated report claims
+- Recommendations are separated from explicit decisions / agreements
+- Ambiguous or fragmentary claims are omitted from the report
+- Internal evidence references remain available even when references are hidden in exported files
+- Detailed and Full Report modes use multiple evidence items per topic to preserve more nuance

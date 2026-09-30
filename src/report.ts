@@ -1,4 +1,5 @@
 import type {
+  ClaimValidation,
   MeetingReport,
   Project,
   ReportBullet,
@@ -14,7 +15,7 @@ import type {
   TranscriptSegment,
 } from './types';
 
-type FindingKind = 'requirement' | 'current-state' | 'assessment' | 'options' | 'decision' | 'risk' | 'open-item' | 'evidence';
+type FindingKind = 'requirement' | 'current-state' | 'assessment' | 'options' | 'recommendation' | 'decision' | 'risk' | 'open-item' | 'evidence';
 
 interface ModeConfig {
   maxTopics: number;
@@ -41,7 +42,7 @@ const MODE_CONFIG: Record<SummaryMode, ModeConfig> = {
   detailed: {
     maxTopics: 10,
     topicEvidence: 10,
-    subsectionItems: 1,
+    subsectionItems: 2,
     executiveFacts: 7,
     keyPoints: 5,
     decisions: 4,
@@ -51,7 +52,7 @@ const MODE_CONFIG: Record<SummaryMode, ModeConfig> = {
   report: {
     maxTopics: 10,
     topicEvidence: 16,
-    subsectionItems: 1,
+    subsectionItems: 3,
     executiveFacts: 8,
     keyPoints: 8,
     decisions: 6,
@@ -113,7 +114,7 @@ const TOPIC_RULES: TopicRule[] = [
   {
     id: 'cicd',
     title: 'CI/CD, Automation & Configuration Management',
-    matcher: /(ci\/cd|cicd|pipeline|admin api|automation|gitops|deck|declarative|configuration|promotion|maker|checker|gitlab)/i,
+    matcher: /(ci\/cd|cicd|pipeline|admin api|automation|gitops|deck|declarative configuration|configuration as code|promotion|maker|checker|gitlab)/i,
     overview: 'The automation discussion covered configuration promotion, environment management and synchronizing Kong through CI/CD or administrative interfaces.',
   },
   {
@@ -125,13 +126,13 @@ const TOPIC_RULES: TopicRule[] = [
   {
     id: 'performance',
     title: 'Performance, Testing & Scalability',
-    matcher: /(performance|latency|load test|throughput|rps|scal|high availability|benchmark|payload|virtual cpu|vCPU|cpu|capacity)/i,
+    matcher: /(performance test|load test|throughput|rps|requests per second|high availability|benchmark|payload size|virtual cpu|vcpu|cpu utilization|capacity test)/i,
     overview: 'The performance discussion covered latency, throughput, test results, payload handling and infrastructure sizing considerations.',
   },
   {
     id: 'transformation',
     title: 'API Transformation & Custom Extensions',
-    matcher: /(data kit|custom plugin|soap|rest|transform|transformation|custom extension|plugin development|payload transformation)/i,
+    matcher: /(data kit|soap to rest|rest to soap|xml to json|json to xml|transform|transformation|payload transformation)/i,
     overview: 'The transformation discussion compared native capabilities, Data Kit and custom plugins for cases requiring more specialized processing.',
   },
   {
@@ -143,18 +144,19 @@ const TOPIC_RULES: TopicRule[] = [
   {
     id: 'deployment',
     title: 'Deployment, Environments & Resilience',
-    matcher: /(dev environment|uat|pre-prod|preprod|production|prod|drc|disaster recovery|active passive|failover|rollback|environment|openshift|kubernetes)/i,
+    matcher: /(dev environment|uat|pre-prod|preprod|production environment|prod environment|drc|disaster recovery|active passive|active-active|failover|rollback|openshift|kubernetes)/i,
     overview: 'The deployment discussion covered environment separation, promotion, resilience and operational behavior across production and recovery environments.',
   },
 ];
 
-const REQUIREMENT_CUES = /(requirement|need to|needs to|we need|we want|we would like|must |should |looking to|calls for|use case|expected to|require|mandatory|istiyor|gerekiyor|gerekli|zorunlu)/i;
+const REQUIREMENT_CUES = /(\brequirement\b|we need(?: to)?|we want(?: to)?|we would like(?: to)?|we require(?: to)?|\bmust\b|looking to|calls for|use case|mandatory|istiyor|gerekiyor|gerekli|zorunlu)/i;
 const CURRENT_STATE_CUES = /(currently|current implementation|right now|today we|we currently|we use|we have|we are running|existing|in our environment|our integration|mevcut|şu anda|kullanıyoruz|çalışıyor|entegrasyonumuz)/i;
-const ASSESSMENT_CUES = /(recommend|recommended|better approach|anti-pattern|antipattern|out of the box|native plugin|supported|not supported|not available|limitation|issue|problem|concern|prefer|preferred|best practice|öner|desteklen|sınırlama|uygun değil)/i;
+const ASSESSMENT_CUES = /(anti-pattern|antipattern|out of the box|native plugin|supported|not supported|not available|limitation|issue|problem|concern|desteklen|sınırlama|uygun değil)/i;
+const RECOMMENDATION_CUES = /(recommend|recommended|recommendation|better approach|cleaner approach|preferred approach|best practice|probably be better|would be better|önerilen yaklaşım|daha iyi yaklaşım)/i;
 const OPTION_CUES = /(option|approach|alternative|another way|can use|could use|can be built|custom plugin|native plugin|ci\/cd|admin api|either|one way|possible solution|seçenek|alternatif|yaklaşım)/i;
-const DECISION_CUES = /(we agreed|agreed that|we decided|decision is|confirmed that|we will use|we are going to|the approach (?:is|will be)|accepted|approved|will proceed|going forward|probably be better|would be better|recommended approach|preferred approach|karar verdik|kararlaştır|mutabık|teyit edildi|kullanacağız|ilerleyeceğiz)/i;
-const RISK_CUES = /(risk|latency|single point of failure|failure|outage|dependency|concern|security|compliance|data residency|performance|bottleneck|anti-pattern|antipattern|uncontrolled|availability|constraint|limitation|not available|not supported|riskli|gecikme|bağımlılık|güvenlik|kısıt|sınırlama)/i;
-const OPEN_CUES = /(follow[- ]?up|action item|outstanding|open item|pending|need to confirm|need to check|will check|we will check|come back to you|get back to you|provide you with the answer|need to clarify|roadmap|timeline|availability date|not available yet|not supported yet|to be confirmed|tbd|share the details|share details|aksiyon|teyit|netleştir|kontrol edip|geri döne|açık konu)/i;
+const DECISION_CUES = /(we agreed(?: that| to)?|agreed(?: that| to)|we decided(?: that| to)?|the decision (?:is|was)|decision was made|karar verdik|kararlaştırdık|mutabık kaldık)/i;
+const RISK_CUES = /(risk|single point of failure|outage|dependency|concern|bottleneck|anti-pattern|antipattern|uncontrolled|constraint|limitation|riskli|bağımlılık|kısıt|sınırlama)/i;
+const OPEN_CUES = /(follow[- ]?up|action item|outstanding|open item|\bpending\b|need to confirm|need to check (?:this|that|whether|if)|will check|we will check|come back to you|get back to you|provide you with the answer|need to clarify|roadmap.{0,40}(date|timeline|when|availability)|timeline.{0,40}(confirm|provide|share|roadmap)|availability date|to be confirmed|\btbd\b|share the details|share details|aksiyon|teyit|netleştir|kontrol edip|geri döne|açık konu)/i;
 const DEMO_CUES = /(demo|demonstrat|showed|shown|walked through|walkthrough|tested|configured|implemented|created|deployed|reviewed|presented|göster|test ett|konfigüre|uygula|devreye al)/i;
 
 interface EvidenceItem {
@@ -175,11 +177,13 @@ interface TopicEvidence {
 interface DraftParagraph {
   text: string;
   references: SearchHit[];
+  validation: ClaimValidation;
 }
 
 interface DraftBullet {
   text: string;
   references: SearchHit[];
+  validation: ClaimValidation;
 }
 
 interface DraftSubsection {
@@ -199,11 +203,21 @@ interface DraftSection {
   subsections?: DraftSubsection[];
 }
 
+interface ClaimAuditState {
+  candidateClaims: number;
+  includedClaims: number;
+  omittedClaims: number;
+  reviewNeededClaims: number;
+}
+
+let claimAudit: ClaimAuditState = { candidateClaims: 0, includedClaims: 0, omittedClaims: 0, reviewNeededClaims: 0 };
+
 export function generateMeetingReport(
   project: Project,
   mode: SummaryMode,
   selectedDocumentIds: string[] = [],
 ): MeetingReport {
+  claimAudit = { candidateClaims: 0, includedClaims: 0, omittedClaims: 0, reviewNeededClaims: 0 };
   const config = MODE_CONFIG[mode];
   const documents = resolveDocuments(project, selectedDocumentIds);
   const evidence = collectEvidence(documents);
@@ -224,6 +238,7 @@ export function generateMeetingReport(
     [
       ...pickByKind(allSelectedEvidence, 'requirement', config.keyPoints),
       ...pickByKind(allSelectedEvidence, 'assessment', config.keyPoints),
+      ...pickByKind(allSelectedEvidence, 'recommendation', config.keyPoints),
       ...pickByKind(allSelectedEvidence, 'options', config.keyPoints),
       ...decisions,
     ],
@@ -241,7 +256,11 @@ export function generateMeetingReport(
       title: 'Key Outcomes',
       kind: 'takeaway',
       paragraphs: [],
-      bullets: keyEvidence.slice(0, config.keyPoints).map((item) => evidenceToBullet(item, bestKind(item))),
+      bullets: uniqueEvidence([
+        ...pickByKind(allSelectedEvidence, 'recommendation', config.keyPoints),
+        ...decisions,
+        ...openItems,
+      ], config.keyPoints).map((item) => evidenceToBullet(item, bestKind(item))),
     });
     if (decisions.length) {
       sections.push({
@@ -290,7 +309,7 @@ export function generateMeetingReport(
     if (openItems.length) {
       sections.push({
         id: 'open-items',
-        title: mode === 'report' ? 'Outstanding Items & Recommended Next Steps' : 'Outstanding Questions & Follow-up Actions',
+        title: mode === 'report' ? 'Outstanding Items & Next Steps' : 'Outstanding Questions & Follow-up Actions',
         kind: 'follow-up',
         paragraphs: mode === 'report' ? [buildNextStepsParagraph(openItems)] : [],
         bullets: openItems.map((item) => evidenceToBullet(item, 'open-item')),
@@ -303,11 +322,17 @@ export function generateMeetingReport(
         title: 'Key Takeaways',
         kind: 'takeaway',
         paragraphs: [],
-        bullets: keyEvidence.slice(0, config.keyPoints).map((item) => evidenceToBullet(item, bestKind(item))),
+        bullets: uniqueEvidence([
+          ...pickByKind(allSelectedEvidence, 'recommendation', config.keyPoints),
+          ...decisions,
+          ...openItems,
+          ...pickByKind(allSelectedEvidence, 'assessment', config.keyPoints),
+        ], config.keyPoints).map((item) => evidenceToBullet(item, bestKind(item))),
       });
     }
   }
 
+  const strictSections = filterReviewNeededDraft(sections);
   const segmentCount = documents.reduce((sum, document) => sum + document.transcript.segments.length, 0);
   return finalizeReport(
     project.name,
@@ -315,10 +340,11 @@ export function generateMeetingReport(
     documents.length,
     segmentCount,
     documents.map((document) => document.id),
-    sections,
+    strictSections,
     keyEvidence.map((item) => evidenceToBullet(item, bestKind(item))),
     decisions.map((item) => evidenceToBullet(item, 'decision')),
     openItems.map((item) => evidenceToBullet(item, 'open-item')),
+    claimAudit,
   );
 }
 
@@ -340,49 +366,50 @@ function collectEvidence(documents: TranscriptDocument[]): EvidenceItem[] {
       const raw = cleanText(segment.text);
       if (!isUsefulSegment(raw)) continue;
 
-      const context = contextualText(segments, index);
-      const rawKinds = classifyKinds(raw);
-      const kinds = rawKinds.size ? rawKinds : classifyKinds(context);
-      const topicMatchCount = TOPIC_RULES.reduce((sum, rule) => sum + (rule.matcher.test(context) ? 1 : 0), 0);
-      if (!kinds.size && topicMatchCount === 0) continue;
+      const sentences = splitSentences(raw);
+      for (const sentence of sentences) {
+        const focused = normalizeTranscriptText(sentence);
+        if (!isUsefulFindingText(focused)) continue;
 
-      const score = evidenceScore(segment, context, kinds, topicMatchCount);
-      items.push({
-        document,
-        segment,
-        index,
-        context,
-        score,
-        kinds,
-        hit: {
-          documentId: document.id,
-          documentName: document.name,
-          segmentId: segment.id,
-          sequenceId: segment.sequence_id,
-          displayTime: segment.display_time,
-          confidence: segment.confidence,
+        const kinds = classifyKinds(focused);
+        const topicMatchCount = TOPIC_RULES.reduce((sum, rule) => sum + (rule.matcher.test(focused) ? 1 : 0), 0);
+        if (!kinds.size && topicMatchCount === 0) continue;
+
+        // Avoid generic meeting-management sentences that happen to contain "need", "check", etc.
+        if (isMeetingMetaSentence(focused) && !OPEN_CUES.test(focused)) continue;
+        if (/(anything else that is open beyond|only thing (?:you are )?still needed|only thing pending)/i.test(focused)) {
+          kinds.add('open-item');
+          kinds.delete('requirement');
+        }
+        if (kinds.has('requirement') && isTrivialRequirement(focused)) kinds.delete('requirement');
+        if (kinds.has('open-item') && isTrivialOpenItem(focused)) kinds.delete('open-item');
+        if (!kinds.size && topicMatchCount === 0) continue;
+
+        const score = evidenceScore(segment, focused, kinds, topicMatchCount);
+        items.push({
+          document,
+          segment,
+          index,
+          context: focused,
           score,
-          text: raw,
-          context,
-        },
-      });
+          kinds,
+          hit: {
+            documentId: document.id,
+            documentName: document.name,
+            segmentId: segment.id,
+            sequenceId: segment.sequence_id,
+            displayTime: segment.display_time,
+            confidence: segment.confidence,
+            score,
+            text: raw,
+            context: focused,
+          },
+        });
+      }
     }
   }
 
   return items;
-}
-
-function contextualText(segments: TranscriptSegment[], index: number): string {
-  const current = cleanText(segments[index]?.text ?? '');
-  const before = cleanText(segments[index - 1]?.text ?? '');
-  const after = cleanText(segments[index + 1]?.text ?? '');
-  const parts: string[] = [];
-
-  if (current.length < 180 && before.length >= 20 && before.length <= 240) parts.push(before);
-  parts.push(current);
-  if (current.length < 260 && after.length >= 20 && after.length <= 320) parts.push(after);
-
-  return parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 950);
 }
 
 function classifyKinds(value: string): Set<FindingKind> {
@@ -390,6 +417,7 @@ function classifyKinds(value: string): Set<FindingKind> {
   if (REQUIREMENT_CUES.test(value)) kinds.add('requirement');
   if (CURRENT_STATE_CUES.test(value)) kinds.add('current-state');
   if (ASSESSMENT_CUES.test(value)) kinds.add('assessment');
+  if (RECOMMENDATION_CUES.test(value)) kinds.add('recommendation');
   if (OPTION_CUES.test(value)) kinds.add('options');
   if (DECISION_CUES.test(value)) kinds.add('decision');
   if (RISK_CUES.test(value)) kinds.add('risk');
@@ -404,6 +432,7 @@ function evidenceScore(segment: TranscriptSegment, context: string, kinds: Set<F
   score += Math.min(1.6, kinds.size * 0.28);
   score += Math.min(1.2, topicMatchCount * 0.24);
   if (DECISION_CUES.test(context) || OPEN_CUES.test(context)) score += 0.55;
+  if (RECOMMENDATION_CUES.test(context)) score += 0.35;
   if (/(we want|we need|current implementation|recommended|custom plugin|native plugin|ci\/cd|admin api|roadmap|not supported|not available)/i.test(context)) score += 0.45;
   return score;
 }
@@ -412,46 +441,11 @@ function buildTopicGroups(evidence: EvidenceItem[]): TopicEvidence[] {
   return TOPIC_RULES.map((rule) => ({
     rule,
     items: uniqueEvidence(
-      evidence
-        .filter((item) => rule.matcher.test(item.context))
-        .map((item) => focusEvidenceForTopic(item, rule))
-        .filter((item) => item.context.length >= 20),
+      evidence.filter((item) => rule.matcher.test(item.context) && item.context.length >= 20),
       60,
     ),
   }));
 }
-
-function focusEvidenceForTopic(item: EvidenceItem, rule: TopicRule): EvidenceItem {
-  const sentences = splitSentences(item.context);
-  const matching = new Set<number>();
-  sentences.forEach((sentence, index) => {
-    if (rule.matcher.test(sentence)) {
-      matching.add(index);
-      if (index > 0 && hasFindingCue(sentences[index - 1] ?? '')) matching.add(index - 1);
-      if (index + 1 < sentences.length && hasFindingCue(sentences[index + 1] ?? '')) matching.add(index + 1);
-    }
-  });
-  const focused = [...matching].sort((a, b) => a - b).map((index) => sentences[index]).join(' ').trim();
-  const context = focused || sentences.find((sentence) => rule.matcher.test(sentence)) || item.context;
-  const kinds = classifyKinds(context);
-  return {
-    ...item,
-    context,
-    kinds: kinds.size ? kinds : item.kinds,
-    hit: { ...item.hit, context },
-  };
-}
-
-function hasFindingCue(value: string): boolean {
-  return REQUIREMENT_CUES.test(value)
-    || CURRENT_STATE_CUES.test(value)
-    || ASSESSMENT_CUES.test(value)
-    || OPTION_CUES.test(value)
-    || DECISION_CUES.test(value)
-    || RISK_CUES.test(value)
-    || OPEN_CUES.test(value);
-}
-
 
 function selectTopicGroups(groups: TopicEvidence[], limit: number): TopicEvidence[] {
   const ranked = [...groups].sort((a, b) => topicWeight(b) - topicWeight(a));
@@ -515,21 +509,25 @@ function buildExecutiveSection(
     paragraphs.push({
       text: `The selected sessions focused on ${joinNaturalList(topicTitles)}. The discussions were treated as a set of requirements, current-state observations, implementation options, architectural considerations and follow-up items rather than as a chronological replay of the conversation.`,
       references: overviewRefs,
+      validation: { status: 'evidence-linked', score: 0.8, evidenceCount: overviewRefs.length },
     });
   }
 
-  const executiveFacts = uniqueEvidence([...decisions, ...keyEvidence, ...openItems], factLimit);
-  if (executiveFacts.length) {
-    const statements = executiveFacts
-      .slice(0, mode === 'report' ? 6 : mode === 'detailed' ? 5 : 3)
-      .map((item) => factSentence(item, bestKind(item)))
-      .filter(Boolean);
-    if (statements.length) {
-      paragraphs.push({
-        text: `${statements.join(' ')} ${openItems.length ? 'Several items remain subject to confirmation, additional customer detail or product-roadmap clarification.' : ''}`.replace(/\s+/g, ' ').trim(),
-        references: uniqueHits(executiveFacts.map((item) => item.hit)),
-      });
-    }
+  const executiveFacts = uniqueEvidence([...decisions, ...openItems, ...keyEvidence.filter((item) => item.kinds.has('recommendation'))], factLimit);
+  const statementItems = executiveFacts
+    .filter((item) => validateEvidenceClaim(item, bestKind(item), factSentence(item, bestKind(item))).status === 'evidence-linked')
+    .slice(0, mode === 'report' ? 5 : mode === 'detailed' ? 4 : 2);
+  const statements = statementItems.map((item) => factSentence(item, bestKind(item))).filter(Boolean);
+  if (statements.length || openItems.length) {
+    const text = [
+      ...statements,
+      openItems.length ? 'Several items remained open for confirmation, additional implementation detail or roadmap clarification.' : '',
+    ].filter(Boolean).join(' ');
+    paragraphs.push({
+      text,
+      references: uniqueHits(statementItems.map((item) => item.hit)),
+      validation: statementItems.length ? aggregateValidation(statementItems, 'evidence') : { status: 'evidence-linked', score: 0.75, evidenceCount: openItems.length },
+    });
   }
 
   return {
@@ -550,6 +548,7 @@ function buildGeneralTopicsSection(groups: TopicEvidence[]): DraftSection {
     bullets: groups.slice(0, 7).map((group) => ({
       text: `${group.rule.title} — ${group.rule.overview}`,
       references: uniqueHits(group.items.slice(0, 2).map((item) => item.hit)),
+      validation: aggregateValidation(group.items.slice(0, 2), 'evidence'),
     })),
   };
 }
@@ -560,26 +559,30 @@ function buildTopicSection(group: TopicEvidence, mode: SummaryMode, config: Mode
 
   const requirementItems = selectTopicKind(items, ['requirement', 'current-state'], config.subsectionItems);
   const assessmentItems = selectTopicKind(excludeEvidence(items, requirementItems), ['assessment', 'risk'], config.subsectionItems);
-  const optionItems = selectTopicKind(excludeEvidence(items, [...requirementItems, ...assessmentItems]), ['options', 'evidence'], config.subsectionItems);
-  const decisionItems = selectTopicKind(excludeEvidence(items, [...requirementItems, ...assessmentItems, ...optionItems]), ['decision'], config.subsectionItems);
-  const openItems = selectTopicKind(excludeEvidence(items, [...requirementItems, ...assessmentItems, ...optionItems, ...decisionItems]), ['open-item'], config.subsectionItems);
+  const recommendationItems = selectTopicKind(excludeEvidence(items, [...requirementItems, ...assessmentItems]), ['recommendation'], config.subsectionItems);
+  const optionItems = selectTopicKind(excludeEvidence(items, [...requirementItems, ...assessmentItems, ...recommendationItems]), ['options', 'evidence'], config.subsectionItems);
+  const decisionItems = selectTopicKind(excludeEvidence(items, [...requirementItems, ...assessmentItems, ...recommendationItems, ...optionItems]), ['decision'], config.subsectionItems);
+  const openItems = selectTopicKind(excludeEvidence(items, [...requirementItems, ...assessmentItems, ...recommendationItems, ...optionItems, ...decisionItems]), ['open-item'], config.subsectionItems);
 
   const overviewEvidence = uniqueEvidence([
     ...requirementItems.slice(0, 2),
     ...assessmentItems.slice(0, 2),
+    ...recommendationItems.slice(0, 2),
     ...optionItems.slice(0, 2),
     ...decisionItems.slice(0, 1),
     ...openItems.slice(0, 1),
   ], mode === 'report' ? 8 : 5);
 
   const overviewParagraphs: DraftParagraph[] = [{
-    text: buildTopicOverview(group.rule, requirementItems, assessmentItems, optionItems, decisionItems, openItems),
+    text: buildTopicOverview(group.rule, requirementItems, assessmentItems, recommendationItems, optionItems, decisionItems, openItems),
     references: uniqueHits(overviewEvidence.map((item) => item.hit)),
+    validation: aggregateValidation(overviewEvidence, 'evidence'),
   }];
 
   const subsections: DraftSubsection[] = [];
   pushSubsection(subsections, 'requirement-current', 'Requirement & Current State', 'requirement', requirementItems, 'requirement');
   pushSubsection(subsections, 'assessment', 'Assessment & Considerations', 'assessment', assessmentItems, 'assessment');
+  pushSubsection(subsections, 'recommendations', 'Recommendations / Preferred Approach', 'recommendation', recommendationItems, 'recommendation');
   pushSubsection(subsections, 'options', 'Implementation Options', 'options', optionItems, 'options');
   pushSubsection(subsections, 'decisions', 'Decisions / Agreed Direction', 'decision', decisionItems, 'decision');
   pushSubsection(subsections, 'open-points', 'Open Points', 'open-item', openItems, 'open-item');
@@ -621,20 +624,27 @@ function buildTopicOverview(
   rule: TopicRule,
   requirements: EvidenceItem[],
   assessments: EvidenceItem[],
+  recommendations: EvidenceItem[],
   options: EvidenceItem[],
   decisions: EvidenceItem[],
   openItems: EvidenceItem[],
 ): string {
   const parts = [rule.overview];
 
+  const appendValidated = (item: EvidenceItem | undefined, kind: FindingKind) => {
+    if (!item) return;
+    const text = factSentence(item, kind);
+    if (validateEvidenceClaim(item, kind, text).status === 'evidence-linked' && text) parts.push(text);
+  };
+
   const requirement = requirements[0];
-  if (requirement) parts.push(factSentence(requirement, requirement.kinds.has('requirement') ? 'requirement' : 'current-state'));
+  appendValidated(requirement, requirement?.kinds.has('requirement') ? 'requirement' : 'current-state');
   const assessment = assessments[0];
-  if (assessment) parts.push(factSentence(assessment, assessment.kinds.has('risk') ? 'risk' : 'assessment'));
+  appendValidated(assessment, assessment?.kinds.has('risk') ? 'risk' : 'assessment');
+  appendValidated(recommendations[0], 'recommendation');
   const option = options[0];
-  if (option) parts.push(factSentence(option, option.kinds.has('options') ? 'options' : 'evidence'));
-  const decision = decisions[0];
-  if (decision) parts.push(factSentence(decision, 'decision'));
+  appendValidated(option, option?.kinds.has('options') ? 'options' : 'evidence');
+  appendValidated(decisions[0], 'decision');
   if (openItems.length) parts.push('At least one point in this area remained open for confirmation or further detail.');
 
   return parts.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
@@ -645,14 +655,16 @@ function buildCrossCuttingParagraph(items: EvidenceItem[], kind: FindingKind): D
   return {
     text: `Several cross-cutting considerations affect the target architecture beyond any single feature area. ${selected.map((item) => factSentence(item, kind)).join(' ')}`,
     references: uniqueHits(selected.map((item) => item.hit)),
+    validation: aggregateValidation(selected, kind),
   };
 }
 
 function buildNextStepsParagraph(items: EvidenceItem[]): DraftParagraph {
   const selected = uniqueEvidence(items, 6);
   return {
-    text: 'The remaining work should focus on closing the explicitly unresolved items, obtaining missing implementation detail, and confirming any product or roadmap dependencies before the target design is treated as final.',
+    text: 'The next steps are the unresolved follow-up items captured below, including the remaining confirmations, implementation details and roadmap dependencies explicitly raised during the selected sessions.',
     references: uniqueHits(selected.map((item) => item.hit)),
+    validation: aggregateValidation(selected, 'open-item'),
   };
 }
 
@@ -682,14 +694,18 @@ function kindSelectionScore(item: EvidenceItem, kinds: FindingKind[]): number {
   }
   if (kinds.includes('assessment') || kinds.includes('risk')) {
     if (/(anti-pattern|antipattern)/i.test(value)) score += 4.5;
-    if (/(latency|single point of failure|outage|dependency|better approach|recommend|not supported|not available)/i.test(value)) score += 2.5;
+    if (/(latency|single point of failure|outage|dependency|not supported|not available)/i.test(value)) score += 2.5;
+  }
+  if (kinds.includes('recommendation')) {
+    if (RECOMMENDATION_CUES.test(value)) score += 4.2;
   }
   if (kinds.includes('options') || kinds.includes('evidence')) {
     if (/(custom plugin|ci\/cd|admin api|source-controlled)/i.test(value)) score += 5;
     if (/(native plugin|out-of-the-box|standard .*plugin|alternative|option)/i.test(value)) score += 2.7;
   }
   if (kinds.includes('decision')) {
-    if (/(probably be better|would be better|recommend|preferred|we agreed|we decided|will proceed)/i.test(value)) score += 2.7;
+    if (DECISION_CUES.test(value)) score += 5;
+    else score -= 6;
   }
   if (kinds.includes('open-item')) {
     if (/(share .*details|details.*integration|need to confirm|need to check|get back|come back|roadmap|timeline|pending)/i.test(value)) score += 4;
@@ -715,16 +731,36 @@ function pickByKind(items: EvidenceItem[], kind: FindingKind, limit: number): Ev
 }
 
 function evidenceToBullet(item: EvidenceItem, kind: FindingKind): DraftBullet {
-  return {
-    text: factSentence(item, kind),
-    references: [item.hit],
-  };
+  claimAudit.candidateClaims += 1;
+  const text = factSentence(item, kind);
+  const validation = validateEvidenceClaim(item, kind, text);
+  if (validation.status === 'review-needed') claimAudit.reviewNeededClaims += 1;
+  else claimAudit.includedClaims += 1;
+  return { text, references: [item.hit], validation };
+}
+
+function extractFindingClause(value: string, kind: FindingKind): string {
+  const text = normalizeTranscriptText(value);
+  if (!text) return '';
+  const cue = kindMatcher(kind);
+  const clauses = text
+    .split(/(?:;|\s+and then\s+|\s+but then\s+|\s+however\s+|\s+so then\s+)/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const matched = clauses.find((part) => cue.test(part));
+  const chosen = matched ?? text;
+  const words = chosen.split(/\s+/).filter(Boolean);
+  if (words.length > 60) return '';
+  return chosen;
 }
 
 function factSentence(item: EvidenceItem, kind: FindingKind): string {
+  if (!isUsefulFindingText(item.context) || isMeetingMetaSentence(item.context)) return '';
   const known = normalizeKnownTechnicalFact(item, kind);
   if (known) return known;
-  const sentence = bestSentence(item.context, kind);
+  const focusedClause = extractFindingClause(item.context, kind);
+  if (!focusedClause) return '';
+  const sentence = bestSentence(focusedClause, kind);
   const cleaned = stripConversationalLead(sentence);
   const body = sentenceCase(trimSentence(cleaned, 190));
   if (!body) return '';
@@ -734,8 +770,8 @@ function factSentence(item: EvidenceItem, kind: FindingKind): string {
 
   switch (kind) {
     case 'requirement':
-      if (/^(we|they) (need|want|would like|require)/i.test(body)) {
-        return ensurePeriod(`The requirement discussed is to ${body.replace(/^(we|they) (need|want|would like|require)(?: to)?\s+/i, '')}`);
+      if (/^(we|they) (need|want|wanted|would like|require)/i.test(body)) {
+        return ensurePeriod(`The requirement discussed is to ${body.replace(/^(we|they) (need|want|wanted|would like|require)(?: to)?\s+/i, '')}`);
       }
       if (/^this scenario calls for/i.test(body)) return ensurePeriod(body.replace(/^this scenario calls for\s+/i, 'The requirement calls for '));
       if (/^looking to\s+/i.test(body)) return ensurePeriod(`The requirement is to ${body.replace(/^looking to\s+/i, '')}`);
@@ -759,6 +795,9 @@ function factSentence(item: EvidenceItem, kind: FindingKind): string {
     case 'options':
       if (/^(we|you|they) can\s+/i.test(body)) return ensurePeriod(`An implementation option discussed is to ${body.replace(/^(we|you|they) can\s+/i, '')}`);
       return ensurePeriod(alreadyReported ? body : `An implementation option discussed is that ${lower}`);
+    case 'recommendation':
+      if (/^(we|you|they) (recommend|prefer)\s+/i.test(body)) return ensurePeriod(`The recommended direction is to ${body.replace(/^(we|you|they) (recommend|prefer)(?: to)?\s+/i, '')}`);
+      return ensurePeriod(alreadyReported ? body : `The recommendation discussed is that ${lower}`);
     case 'decision':
       if (/^we (agreed|decided|will|are going to)/i.test(body)) {
         return ensurePeriod(`The agreed direction was to ${body.replace(/^we (agreed(?: that)?|decided(?: that)?|will|are going to)\s+/i, '')}`);
@@ -777,6 +816,128 @@ function factSentence(item: EvidenceItem, kind: FindingKind): string {
 }
 
 
+function validateEvidenceClaim(item: EvidenceItem, kind: FindingKind, text: string): ClaimValidation {
+  const evidence = normalizeTranscriptText(item.context);
+  if (!text || !isUsefulFindingText(evidence) || looksLikeFragment(text) || isMeetingMetaSentence(evidence)) {
+    return { status: 'review-needed', score: 0.1, evidenceCount: 1, reason: 'Fragmentary, low-quality or meeting-management text.' };
+  }
+  const quality = findingQualityScore(evidence, kind);
+  if (quality < 0.5) {
+    return { status: 'review-needed', score: quality, evidenceCount: 1, reason: 'The transcript wording is too conversational, ambiguous or noisy for automatic external-report use.' };
+  }
+
+  const cue = kindMatcher(kind);
+  let score = (kind === 'evidence' ? 0.56 : 0.24) + quality * 0.18;
+  if (kind === 'evidence' || cue.test(evidence)) score += 0.42;
+  if (item.segment.confidence >= 0.75) score += 0.12;
+  else if (item.segment.confidence < 0.45) score -= 0.18;
+  if (text.length >= 35) score += 0.06;
+
+  if (kind !== 'evidence' && !cue.test(evidence)) {
+    return { status: 'review-needed', score: Math.max(0, score - 0.3), evidenceCount: 1, reason: `No explicit ${kind} cue in the linked evidence.` };
+  }
+  if (kind === 'decision' && !DECISION_CUES.test(evidence)) {
+    return { status: 'review-needed', score: 0.1, evidenceCount: 1, reason: 'No explicit decision/agreement cue in the linked evidence.' };
+  }
+  if (kind === 'recommendation' && !RECOMMENDATION_CUES.test(evidence)) {
+    return { status: 'review-needed', score: 0.1, evidenceCount: 1, reason: 'No explicit recommendation/preference cue in the linked evidence.' };
+  }
+
+  return score >= 0.68
+    ? { status: 'evidence-linked', score: Math.min(1, score), evidenceCount: 1 }
+    : { status: 'review-needed', score: Math.max(0, score), evidenceCount: 1, reason: 'The evidence is not strong enough for automatic inclusion.' };
+}
+
+function aggregateValidation(items: EvidenceItem[], kind: FindingKind): ClaimValidation {
+  if (!items.length) return { status: 'review-needed', score: 0, evidenceCount: 0, reason: 'No linked evidence.' };
+  if (kind === 'evidence') {
+    const good = items.filter((item) => isUsefulFindingText(item.context) && !isMeetingMetaSentence(item.context));
+    const score = good.length / items.length;
+    return good.length
+      ? { status: 'evidence-linked', score: Math.max(0.72, score), evidenceCount: good.length }
+      : { status: 'review-needed', score: 0.2, evidenceCount: items.length, reason: 'No sufficiently clean evidence.' };
+  }
+  const validations = items.map((item) => validateEvidenceClaim(item, kind, factSentence(item, kind)));
+  const good = validations.filter((item) => item.status === 'evidence-linked');
+  const average = validations.reduce((sum, item) => sum + item.score, 0) / validations.length;
+  return good.length >= Math.ceil(items.length / 2)
+    ? { status: 'evidence-linked', score: Math.min(1, average), evidenceCount: good.length }
+    : { status: 'review-needed', score: Math.max(0, average), evidenceCount: items.length, reason: 'The combined evidence requires human review.' };
+}
+
+function findingQualityScore(value: string, kind: FindingKind): number {
+  const text = normalizeTranscriptText(value);
+  const words = text.split(/\s+/).filter(Boolean);
+  let score = 0.72;
+  if (words.length > 48) score -= 0.18;
+  if (/[?]$/.test(text) && kind !== 'open-item') score -= 0.3;
+  if (/^(is|are|can|could|do|does|did|what|why|how|when|where)\b/i.test(text) && kind !== 'open-item') score -= 0.28;
+  if (/(let'?s say|as you can see|if you recall|you know|so on so forth|so on and so forth|just want to|quick look|for my demonstration|for the demo)/i.test(text)) score -= 0.22;
+  if (/\b(yesterday|today)\b/i.test(text) && /(demo|resource|issue|machine)/i.test(text)) score -= 0.18;
+  const firstPersonCount = (text.match(/\b(i|we|our|my)\b/gi) ?? []).length;
+  if (firstPersonCount >= 5) score -= 0.18;
+  const commaCount = (text.match(/,/g) ?? []).length;
+  if (commaCount >= 5 && words.length > 35) score -= 0.14;
+  if (/\b(this|that) is the first thing\b/i.test(text)) score -= 0.08;
+  return Math.max(0, Math.min(1, score));
+}
+
+function isUsefulFindingText(value: string): boolean {
+  const text = normalizeTranscriptText(value);
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length < 5 || words.length > 70) return false;
+  if (/[^\u0000-\u024F\u1E00-\u1EFF\s\d.,:;!?()\[\]{}'"/+&%#@=_-]/u.test(text)) return false;
+  if (/^(thank|thanks|hello|good morning|good afternoon|okay|ok|yes|yeah|no|sorry)\b/i.test(text) && words.length < 12) return false;
+  return true;
+}
+
+function isMeetingMetaSentence(value: string): boolean {
+  return /(before we start|after the break|take a break|finish the day|how long do you|remaining scenario|move on to the next|go back to our list|overall plan for the week|wanted to show you|i can share all of these|review at your own time|let's see|do you have any question|any questions|thank you|most welcome|for the demo|during the demo|we've asked|we asked .* to show|scenario s\d+|point number)/i.test(value);
+}
+
+function isTrivialRequirement(value: string): boolean {
+  return /(we need to (check|see|talk|move|start|finish|go back)|we want to (show|see|check|start)|need to check that|need to see why)/i.test(value);
+}
+
+function isTrivialOpenItem(value: string): boolean {
+  return /(check that and see why|need to check live|let's check|i'll take it|we need to talk about)/i.test(value);
+}
+
+function looksLikeFragment(value: string): boolean {
+  const text = normalizeTranscriptText(value);
+  if (!text) return true;
+  if (/\b(and|but|because|which|that|to|with|of|for|from|or)\s*$/i.test(text)) return true;
+  if (/^(and|but|because|which|so that)\b/i.test(text) && text.split(/\s+/).length < 10) return true;
+  return false;
+}
+
+function filterReviewNeededDraft(sections: DraftSection[]): DraftSection[] {
+  return sections
+    .map((section) => ({
+      ...section,
+      paragraphs: section.paragraphs.filter((item) => {
+        if (item.validation.status === 'review-needed') { claimAudit.omittedClaims += 1; return false; }
+        return true;
+      }),
+      bullets: section.bullets.filter((item) => {
+        if (item.validation.status === 'review-needed') { claimAudit.omittedClaims += 1; return false; }
+        return true;
+      }),
+      subsections: section.subsections?.map((subsection) => ({
+        ...subsection,
+        paragraphs: subsection.paragraphs.filter((item) => {
+          if (item.validation.status === 'review-needed') { claimAudit.omittedClaims += 1; return false; }
+          return true;
+        }),
+        bullets: subsection.bullets.filter((item) => {
+          if (item.validation.status === 'review-needed') { claimAudit.omittedClaims += 1; return false; }
+          return true;
+        }),
+      })).filter((subsection) => subsection.paragraphs.length || subsection.bullets.length),
+    }))
+    .filter((section) => section.paragraphs.length || section.bullets.length || (section.subsections?.length ?? 0) > 0);
+}
+
 function normalizeKnownTechnicalFact(item: EvidenceItem, kind: FindingKind): string | null {
   const value = item.context.replace(/\s+/g, ' ').trim();
 
@@ -790,10 +951,10 @@ function normalizeKnownTechnicalFact(item: EvidenceItem, kind: FindingKind): str
     return 'The current implementation includes a database integration used as part of the access-control flow.';
   }
 
-  if (kind === 'assessment'
+  if (kind === 'recommendation'
     && /depending on an external source/i.test(value)
     && /(better approach|maintain .*plugin)/i.test(value)) {
-    return 'Runtime dependence on an external source was identified as an architectural concern, with native plugin configuration maintained through CI/CD discussed as the cleaner approach.';
+    return 'A preferred approach discussed was to avoid runtime dependence on an external source and maintain the native plugin configuration through CI/CD.';
   }
 
   if (kind === 'assessment' && /anti-pattern/i.test(value)) {
@@ -814,7 +975,7 @@ function normalizeKnownTechnicalFact(item: EvidenceItem, kind: FindingKind): str
     return 'The native option is to use the standard IP Restriction and authentication plugins and update their configuration automatically through a CI/CD pipeline when the source access data changes.';
   }
 
-  if (kind === 'decision'
+  if (kind === 'recommendation'
     && /standard out-of-the-box ip restriction plugin/i.test(value)
     && /source-controlled repo/i.test(value)) {
     return 'The preferred approach discussed was to use the native IP Restriction plugin with the approved IP list kept in source control and synchronized automatically through CI/CD.';
@@ -826,6 +987,30 @@ function normalizeKnownTechnicalFact(item: EvidenceItem, kind: FindingKind): str
 
   if (kind === 'open-item' && /ip restrictions?.*need to check/i.test(value)) {
     return 'The IP restriction scenario remained subject to follow-up confirmation.';
+  }
+
+  if (kind === 'open-item' && /masking sensitive data/i.test(value) && /filtering/i.test(value)) {
+    return 'Follow-up is required to confirm the supported approaches for masking sensitive event data in transit and filtering event data based on client identity.';
+  }
+
+  if (kind === 'open-item' && /(add (?:a |the )?video|video or image|image or video)/i.test(value) && /(openapi|developer portal|api)/i.test(value)) {
+    return 'Follow-up is required to confirm the supported approach for adding image or video content to API documentation in the Developer Portal.';
+  }
+
+  if (kind === 'open-item' && /(organization|organisational|partner).{0,80}(admin|administrator)/i.test(value) && /(get back|need to think|specific answer)/i.test(value)) {
+    return 'Follow-up is required to confirm the delegated organization-administrator model, including whether external administrators can invite and manage their own team members without unrestricted administrative access.';
+  }
+
+  if (kind === 'open-item' && /onboarding for async api/i.test(value) && /(dates|information security|data sharing)/i.test(value)) {
+    return 'Follow-up is required to provide roadmap timing for Async API onboarding through the Developer Portal and the requested information-security and data-sharing details.';
+  }
+
+  if (kind === 'assessment' && /we don'?t manage the authentication of async api through the developer portal/i.test(value)) {
+    return 'Async API documentation can be published through the Developer Portal, but authentication for Async API is not currently managed through the Developer Portal.';
+  }
+
+  if (kind === 'requirement' && /understand clearly why we need redis/i.test(value)) {
+    return 'The requirement is to clarify where Redis is required in the proposed architecture and which use cases depend on it.';
   }
 
   return null;
@@ -855,6 +1040,7 @@ function kindMatcher(kind: FindingKind): RegExp {
   if (kind === 'requirement') return REQUIREMENT_CUES;
   if (kind === 'current-state') return CURRENT_STATE_CUES;
   if (kind === 'assessment') return ASSESSMENT_CUES;
+  if (kind === 'recommendation') return RECOMMENDATION_CUES;
   if (kind === 'options') return OPTION_CUES;
   if (kind === 'decision') return DECISION_CUES;
   if (kind === 'risk') return RISK_CUES;
@@ -863,7 +1049,7 @@ function kindMatcher(kind: FindingKind): RegExp {
 }
 
 function bestKind(item: EvidenceItem): FindingKind {
-  const priority: FindingKind[] = ['decision', 'open-item', 'requirement', 'current-state', 'assessment', 'options', 'risk', 'evidence'];
+  const priority: FindingKind[] = ['decision', 'open-item', 'recommendation', 'requirement', 'current-state', 'assessment', 'options', 'risk', 'evidence'];
   return priority.find((kind) => item.kinds.has(kind)) ?? 'evidence';
 }
 
@@ -872,10 +1058,12 @@ function stripConversationalLead(value: string): string {
     .replace(/\bCICV\b/gi, 'CI/CD')
     .replace(/\bCI-CD\b/gi, 'CI/CD')
     .replace(/\bKog\b/g, 'Kong')
+    .replace(/(?:\.{2,}|…+)/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/^(okay|ok|yeah|yes|right|so|well|basically|actually|i think|we think|you know|by the way|let me|all right|alright)[,.:;!?\s-]+/i, '')
     .replace(/^(can you|could you|would you|do you|did you|are you|is it|what about)\s+/i, '')
+    .replace(/^(and|but|so)\s+/i, '')
     .trim();
 }
 
@@ -884,16 +1072,14 @@ function sentenceCase(value: string): string {
   return value.charAt(0).toLocaleUpperCase('en-US') + value.slice(1);
 }
 
-function trimSentence(value: string, max: number): string {
-  let text = value.replace(/\s+/g, ' ').trim();
-  if (text.length > max) text = `${text.slice(0, max - 1).trimEnd()}…`;
-  return text;
+function trimSentence(value: string, _max: number): string {
+  return normalizeTranscriptText(value);
 }
 
 function ensurePeriod(value: string): string {
   const text = value.replace(/\s+/g, ' ').trim().replace(/[?]+$/g, '.');
   if (!text) return '';
-  return /[.!…]$/.test(text) ? text : `${text}.`;
+  return /[.!]$/.test(text) ? text : `${text}.`;
 }
 
 function isUsefulSegment(value: string): boolean {
@@ -904,13 +1090,21 @@ function isUsefulSegment(value: string): boolean {
 }
 
 function splitSentences(value: string): string[] {
-  return (value.match(/[^.!?…]+[.!?…]+|[^.!?…]+$/g) ?? [value])
+  const normalized = normalizeTranscriptText(value);
+  return (normalized.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [normalized])
     .map((part) => part.trim())
     .filter(Boolean);
 }
 
 function cleanText(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
+  return normalizeTranscriptText(value);
+}
+
+function normalizeTranscriptText(value: string): string {
+  return value
+    .replace(/(?:\.{2,}|…+)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function uniqueEvidence(items: EvidenceItem[], limit: number): EvidenceItem[] {
@@ -954,6 +1148,7 @@ function finalizeReport(
   keyPoints: DraftBullet[],
   decisions: DraftBullet[],
   openItems: DraftBullet[],
+  audit: ClaimAuditState,
 ): MeetingReport {
   const referenceMap = new Map<string, ReportReference>();
   let nextReferenceId = 1;
@@ -983,10 +1178,12 @@ function finalizeReport(
   const mapParagraph = (paragraph: DraftParagraph): ReportParagraph => ({
     text: paragraph.text,
     referenceIds: mapReferences(paragraph.references),
+    validation: paragraph.validation,
   });
   const mapBullet = (bullet: DraftBullet): ReportBullet => ({
     text: bullet.text,
     referenceIds: mapReferences(bullet.references),
+    validation: bullet.validation,
   });
   const mapSubsection = (subsection: DraftSubsection): ReportSubsection => ({
     id: subsection.id,
@@ -1005,9 +1202,9 @@ function finalizeReport(
     subsections: section.subsections?.map(mapSubsection),
   }));
 
-  const mappedKeyPoints = keyPoints.map(mapBullet);
-  const mappedDecisions = decisions.map(mapBullet);
-  const mappedOpenItems = openItems.map(mapBullet);
+  const mappedKeyPoints = keyPoints.filter((item) => item.validation.status === 'evidence-linked').map(mapBullet);
+  const mappedDecisions = decisions.filter((item) => item.validation.status === 'evidence-linked').map(mapBullet);
+  const mappedOpenItems = openItems.filter((item) => item.validation.status === 'evidence-linked').map(mapBullet);
 
   const wordCount = countWords(
     sections.flatMap((section) => [
@@ -1036,6 +1233,12 @@ function finalizeReport(
     openItems: mappedOpenItems,
     references: [...referenceMap.values()].sort((a, b) => a.id - b.id),
     wordCount,
+    validation: {
+      candidateClaims: audit.candidateClaims,
+      includedClaims: audit.includedClaims,
+      omittedClaims: audit.omittedClaims,
+      reviewNeededClaims: audit.reviewNeededClaims,
+    },
   };
 }
 

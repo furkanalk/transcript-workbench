@@ -473,7 +473,7 @@ function renderSummary(project: Project): string {
       <div class="flex flex-col gap-4 border-b border-slate-800 pb-5 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <div class="text-lg font-semibold text-white">Transcript Summary</div>
-          <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Generate a professional meeting assessment from the selected transcripts. The report extracts requirements, current-state details, implementation options, decisions, risks and open items instead of replaying the conversation.</p>
+          <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Generate a professional meeting assessment from the selected transcripts. The report extracts evidence-linked requirements, current-state details, recommendations, implementation options, explicit decisions, risks and open items instead of replaying the conversation.</p>
           <div class="mt-2 text-[11px] text-cyan-300/70">Scope: ${scopeLabel}${meetingReport ? ` · ${meetingReport.segmentCount.toLocaleString()} segments` : ''}</div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
@@ -539,12 +539,15 @@ function summaryModeLabel(mode: SummaryMode): string {
 function renderMeetingReport(report: MeetingReport): string {
   return `
     <div class="mt-6 space-y-6">
-      <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div class="grid grid-cols-2 gap-3 md:grid-cols-5">
         ${metricCard('Sources', String(report.sourceCount))}
         ${metricCard('Segments', report.segmentCount.toLocaleString())}
         ${metricCard('Words', report.wordCount.toLocaleString())}
         ${metricCard('References', String(report.references.length))}
+        ${metricCard('Claims omitted', String(report.validation.omittedClaims))}
       </div>
+
+      <div class="rounded-xl border border-emerald-900/25 bg-emerald-950/[0.08] px-4 py-3 text-[11px] leading-5 text-emerald-200/75">Strict evidence mode is enabled. Recommendations are kept separate from decisions, decisions require explicit agreement language, and ambiguous claims are omitted from the generated report. ${report.validation.omittedClaims ? `${report.validation.omittedClaims} candidate claim${report.validation.omittedClaims === 1 ? '' : 's'} were omitted for requiring review.` : 'No generated claims were omitted by the claim gate.'}</div>
 
       ${report.sections.map((section) => `
         <section class="rounded-2xl border ${section.kind === 'overview' ? 'border-cyan-900/25 bg-cyan-950/[0.08]' : section.kind === 'follow-up' ? 'border-amber-900/25 bg-amber-950/[0.06]' : 'border-slate-800 bg-slate-950/30'} p-5">
@@ -553,7 +556,7 @@ function renderMeetingReport(report: MeetingReport): string {
           ${section.bullets.length ? `<ul class="mt-4 space-y-2.5">${section.bullets.map((bullet) => `<li class="flex gap-3 text-sm leading-6 text-slate-300"><span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-600"></span><span>${escapeHtml(bullet.text)}${renderReferenceMarkers(bullet.referenceIds)}</span></li>`).join('')}</ul>` : ''}
           ${(section.subsections ?? []).length ? `<div class="mt-5 space-y-5 border-t border-white/[0.06] pt-5">${(section.subsections ?? []).map((subsection) => `
             <div>
-              <div class="text-[11px] font-semibold uppercase tracking-[0.08em] ${subsection.kind === 'open-item' ? 'text-amber-300/80' : subsection.kind === 'decision' ? 'text-emerald-300/80' : 'text-slate-500'}">${escapeHtml(subsection.title)}</div>
+              <div class="text-[11px] font-semibold uppercase tracking-[0.08em] ${subsection.kind === 'open-item' ? 'text-amber-300/80' : subsection.kind === 'decision' ? 'text-emerald-300/80' : subsection.kind === 'recommendation' ? 'text-cyan-300/80' : 'text-slate-500'}">${escapeHtml(subsection.title)}</div>
               ${subsection.paragraphs.length ? `<div class="mt-2 space-y-3">${subsection.paragraphs.map((paragraph) => `<p class="text-sm leading-7 text-slate-400">${escapeHtml(paragraph.text)}${renderReferenceMarkers(paragraph.referenceIds)}</p>`).join('')}</div>` : ''}
               ${subsection.bullets.length ? `<ul class="mt-2 space-y-2">${subsection.bullets.map((bullet) => `<li class="flex gap-3 text-sm leading-6 text-slate-300"><span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-700"></span><span>${escapeHtml(bullet.text)}${renderReferenceMarkers(bullet.referenceIds)}</span></li>`).join('')}</ul>` : ''}
             </div>`).join('')}</div>` : ''}
@@ -572,7 +575,7 @@ function renderMeetingReport(report: MeetingReport): string {
         </div>
       </details>
 
-      <div class="text-[10px] leading-5 text-slate-600">The narrative is generated locally from extractive and heuristic analysis. Language normalization uses an on-device browser translator when available. References remain attached so important statements can be checked against the original transcript.</div>
+      <div class="text-[10px] leading-5 text-slate-600">The report is generated locally using extractive, heuristic analysis with a strict evidence gate. Recommendations are not treated as decisions, and claims that do not pass the evidence checks are omitted. References remain attached internally so statements can be reviewed against the original transcript before external sharing.</div>
     </div>
   `;
 }
