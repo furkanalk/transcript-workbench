@@ -1,16 +1,17 @@
 import './styles.css';
-import { downloadHtmlContent, downloadJson, downloadMarkdown, downloadMergedDocuments, downloadTextContent, downloadTranscriptLowMemory, downloadTxt, formatSourceMoment } from './export';
-import { answerQuestion, generateDetailedSummary, generateNarrativeSummary, generateSummary } from './intelligence';
+import { downloadHtmlContent, downloadJson, downloadMarkdown, downloadMergedDocuments, downloadPdfReport, downloadTextContent, downloadTranscriptLowMemory, downloadTxt, downloadWordReport, formatSourceMoment, reportToHtml, reportToMarkdown, reportToText } from './export';
+import { answerQuestion } from './intelligence';
+import { generateMeetingReport } from './report';
+import { translateMeetingReport, TranslationUnavailableError } from './translation';
 import { formatClock, makeId, mergeTranscriptsAsync, parseTranscript } from './parser';
 import { loadWorkspace, saveWorkspace } from './storage';
 import type {
   AnswerResult,
   AppTab,
-  DetailedSummaryResult,
-  NarrativeSummaryResult,
   ConfidenceFilter,
   Project,
-  SummaryResult,
+  MeetingReport,
+  SummaryLanguage,
   SummaryMode,
   TranscriptDocument,
   TranscriptFile,
@@ -28,10 +29,12 @@ let confidenceFilter: ConfidenceFilter = 'all';
 let transcriptQuery = '';
 let selectedSegmentId: string | null = null;
 let mergeSelection = new Set<string>();
-let summaryResult: SummaryResult | null = null;
-let detailedSummaryResult: DetailedSummaryResult | null = null;
-let narrativeSummaryResult: NarrativeSummaryResult | null = null;
+let meetingReport: MeetingReport | null = null;
 let summaryMode: SummaryMode = 'general';
+let summaryLanguage: SummaryLanguage = 'original';
+let summaryBusy = false;
+let summaryError: string | null = null;
+let summaryProgress: string | null = null;
 let exportCleanupEnabled = false;
 let exportReadableEnabled = true;
 let answerResult: AnswerResult | null = null;
@@ -90,9 +93,7 @@ function getActiveDocument(): TranscriptDocument | null {
 
 function touchProject(project: Project) {
   project.updatedAt = new Date().toISOString();
-  summaryResult = null;
-  detailedSummaryResult = null;
-  narrativeSummaryResult = null;
+  invalidateSummaryCache();
   scheduleSave();
 }
 
@@ -447,127 +448,127 @@ function renderCleanSegments(segments: TranscriptSegment[]): string {
 function renderSummary(project: Project): string {
   if (!project.documents.length) return emptyMain('Nothing to summarize', 'Add transcript files to the collection first.');
   const selectedIds = selectedDocumentIdsForSummary(project);
-  if (!summaryResult) summaryResult = generateSummary(project, 10, selectedIds);
-  if (!detailedSummaryResult) detailedSummaryResult = generateDetailedSummary(project, 7, selectedIds);
-  if (!narrativeSummaryResult || narrativeSummaryResult.mode !== summaryMode) {
-    narrativeSummaryResult = generateNarrativeSummary(project, summaryMode, selectedIds);
+  const resolvedIds = resolvedSummaryDocumentIds(project, selectedIds);
+
+  if (!meetingReport && !summaryBusy && summaryLanguage === 'original') {
+    meetingReport = generateMeetingReport(project, summaryMode, selectedIds);
+  }
+  if (meetingReport && !reportMatchesScope(meetingReport, summaryMode, summaryLanguage, resolvedIds)) {
+    meetingReport = null;
   }
 
-  const activeCount = summaryMode === 'general'
-    ? summaryResult.points.length
-    : detailedSummaryResult.sections.reduce((sum, section) => sum + section.points.length, 0);
   const selectionCount = project.documents.filter((document) => document.kind === 'source' && mergeSelection.has(document.id)).length;
   const scopeLabel = selectionCount
     ? `${selectionCount} selected transcript${selectionCount === 1 ? '' : 's'}`
     : 'All source transcripts';
+  const modeHint = summaryMode === 'general'
+    ? 'Executive summary · approximately 1 page when enough material is available.'
+    : summaryMode === 'detailed'
+      ? 'Expanded meeting summary · approximately 3 pages when enough material is available.'
+      : 'Full analysis report · approximately 5–6 pages when the selected transcripts contain enough material.';
 
   return `
     <div class="mx-auto max-w-6xl">
       <div class="flex flex-col gap-4 border-b border-slate-800 pb-5 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <div class="text-lg font-semibold text-white">Transcript Summary</div>
-          <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Local summary synthesis built from the selected source transcripts. General provides an executive-level narrative; Detailed expands the meeting story, source context and likely follow-up items.</p>
-          <div class="mt-2 text-[11px] text-cyan-300/70">Scope: ${scopeLabel} · ${summaryResult.segmentCount.toLocaleString()} segments</div>
+          <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Generate a narrative meeting summary from the selected transcripts. Source filenames stay out of the main narrative and remain available only as traceable references.</p>
+          <div class="mt-2 text-[11px] text-cyan-300/70">Scope: ${scopeLabel}${meetingReport ? ` · ${meetingReport.segmentCount.toLocaleString()} segments` : ''}</div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
-          <div class="flex rounded-lg border border-slate-700 bg-slate-950 p-1 text-xs">
-            <button data-action="set-summary-mode" data-summary-mode="general" class="rounded-md px-3 py-1.5 ${summaryMode === 'general' ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}">General</button>
-            <button data-action="set-summary-mode" data-summary-mode="detailed" class="rounded-md px-3 py-1.5 ${summaryMode === 'detailed' ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}">Detailed</button>
-          </div>
-          <button data-action="regenerate-summary" class="quiet-button">Regenerate</button>
-          <button data-action="export-summary" data-format="txt" class="quiet-button">TXT</button>
-          <button data-action="export-summary" data-format="md" class="quiet-button">MD</button>
-          <button data-action="export-summary" data-format="html" class="quiet-button">HTML</button>
+          <button data-action="regenerate-summary" class="quiet-button" ${summaryBusy ? 'disabled' : ''}>${summaryBusy ? 'Generating…' : 'Generate'}</button>
+          <button data-action="export-summary" data-format="txt" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>TXT</button>
+          <button data-action="export-summary" data-format="md" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>MD</button>
+          <button data-action="export-summary" data-format="html" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>HTML</button>
+          <button data-action="export-summary" data-format="word" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>Word</button>
+          <button data-action="export-summary" data-format="pdf" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>PDF</button>
         </div>
       </div>
 
-      <div class="my-5 grid grid-cols-3 gap-3">
-        ${metricCard('Sources', String(summaryResult.sourceCount))}
-        ${metricCard('Segments', String(summaryResult.segmentCount))}
-        ${metricCard(summaryMode === 'general' ? 'Key points' : 'Detailed points', String(activeCount))}
+      <div class="mt-5 grid gap-3 lg:grid-cols-[1fr_1fr]">
+        <section class="rounded-xl border border-slate-800 bg-slate-950/35 p-3.5">
+          <div class="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">Summary mode</div>
+          <div class="mt-2 flex flex-wrap gap-1 rounded-lg border border-slate-800 bg-slate-950 p-1 text-xs">
+            ${summaryModeButton('general', 'General')}
+            ${summaryModeButton('detailed', 'Detailed')}
+            ${summaryModeButton('report', 'Full Report')}
+          </div>
+          <div class="mt-2 text-[10px] leading-4 text-slate-600">${modeHint}</div>
+        </section>
+
+        <section class="rounded-xl border border-slate-800 bg-slate-950/35 p-3.5">
+          <div class="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">Output language</div>
+          <div class="mt-2 flex flex-wrap gap-1 rounded-lg border border-slate-800 bg-slate-950 p-1 text-xs">
+            ${summaryLanguageButton('original', 'Original')}
+            ${summaryLanguageButton('en', 'English')}
+            ${summaryLanguageButton('tr', 'Türkçe')}
+          </div>
+          <div class="mt-2 text-[10px] leading-4 text-slate-600">English/Türkçe uses the browser's on-device Translator API when available. Technical product terms are protected from literal word-by-word translation.</div>
+        </section>
       </div>
 
-      ${renderNarrativeSummary(narrativeSummaryResult)}
-      <div class="mt-7">${summaryMode === 'general' ? renderGeneralSummary(summaryResult) : renderDetailedSummary(detailedSummaryResult)}</div>
+      ${summaryProgress ? `<div data-summary-progress class="mt-4 rounded-xl border border-cyan-900/25 bg-cyan-950/10 px-4 py-3 text-xs text-cyan-200/80">${escapeHtml(summaryProgress)}</div>` : ''}
+      ${summaryError ? `<div class="mt-4 rounded-xl border border-amber-900/30 bg-amber-950/10 px-4 py-3 text-xs leading-5 text-amber-200/80">${escapeHtml(summaryError)}</div>` : ''}
+
+      ${meetingReport ? renderMeetingReport(meetingReport) : summaryBusy
+        ? `<div class="mt-6 rounded-2xl border border-slate-800 bg-slate-950/35 p-8 text-center text-sm text-slate-500">Building ${escapeHtml(summaryModeLabel(summaryMode))}…</div>`
+        : `<div class="mt-6 rounded-2xl border border-slate-800 bg-slate-950/35 p-8 text-center"><div class="text-sm font-semibold text-slate-300">Generate the summary</div><p class="mx-auto mt-2 max-w-2xl text-xs leading-6 text-slate-600">Choose a mode and output language, then click Generate. General targets an executive one-page summary, Detailed expands to roughly three pages, and Full Report uses the available material for a longer 5–6 page analysis.</p></div>`}
     </div>
   `;
 }
 
-function renderNarrativeSummary(result: NarrativeSummaryResult): string {
-  return `
-    <section class="rounded-2xl border border-cyan-900/25 bg-cyan-950/[0.08] p-5">
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div class="text-sm font-semibold text-slate-100">Meeting Summary</div>
-          <div class="mt-1 text-[11px] leading-5 text-slate-600">${result.mode === 'general' ? 'Concise narrative of what was discussed, reviewed, decided and left open.' : 'Expanded narrative across the selected meeting scope, with source-aware synthesis.'}</div>
-        </div>
-        <span class="counter-pill">${result.paragraphs.length} paragraphs</span>
-      </div>
-      <div class="mt-4 space-y-4">
-        ${result.paragraphs.length ? result.paragraphs.map((paragraph) => `
-          <p class="text-[15px] leading-8 text-slate-300">${escapeHtml(paragraph.text)}</p>
-        `).join('') : `<p class="text-sm leading-6 text-slate-600">Not enough transcript content was found to produce a useful narrative summary.</p>`}
-      </div>
-      <div class="mt-4 border-t border-white/[0.05] pt-3 text-[10px] leading-5 text-slate-600">Generated locally with extractive and heuristic synthesis. Review source references in the key points and follow-up sections before treating inferred decisions as formal project decisions.</div>
-    </section>
-  `;
+function summaryModeButton(mode: SummaryMode, label: string): string {
+  return `<button data-action="set-summary-mode" data-summary-mode="${mode}" class="rounded-md px-3 py-1.5 ${summaryMode === mode ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}">${label}</button>`;
 }
 
-function renderGeneralSummary(result: SummaryResult): string {
-  return `
-    <section>
-      <div class="mb-3 flex items-center justify-between gap-3">
-        <div><div class="text-sm font-semibold text-slate-200">General summary</div><div class="mt-0.5 text-[11px] text-slate-600">A compact overview across the whole collection.</div></div>
-      </div>
-      <div class="space-y-3">
-        ${result.points.length ? result.points.map((point, index) => summaryPointCard(point, index)).join('') : emptyMain('No summary points', 'The transcript does not contain enough text to build a useful summary.')}
-      </div>
-    </section>
-  `;
+function summaryLanguageButton(language: SummaryLanguage, label: string): string {
+  return `<button data-action="set-summary-language" data-summary-language="${language}" class="rounded-md px-3 py-1.5 ${summaryLanguage === language ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}">${label}</button>`;
 }
 
-function renderDetailedSummary(result: DetailedSummaryResult): string {
-  return `
-    <div class="space-y-6">
-      ${result.followUps.length ? `
-        <section class="rounded-2xl border border-amber-900/30 bg-amber-950/10 p-4">
-          <div class="text-sm font-semibold text-amber-200">Possible open / follow-up items</div>
-          <p class="mt-1 text-[11px] leading-5 text-amber-200/45">Detected from phrases such as “come back to you”, “pending”, “roadmap”, or “need to confirm”. Review before treating these as formal action items.</p>
-          <div class="mt-3 space-y-2">
-            ${result.followUps.map((point, index) => `
-              <div class="rounded-xl border border-amber-900/20 bg-black/10 p-3">
-                <div class="flex gap-3"><span class="mt-0.5 text-[10px] font-bold text-amber-500/70">${index + 1}</span><div class="min-w-0 flex-1"><p class="text-sm leading-6 text-slate-300">${escapeHtml(point.text)}</p>${referenceButton(point.reference.documentId, point.reference.segmentId, point.reference.documentName, point.reference.displayTime)}</div></div>
-              </div>
-            `).join('')}
-          </div>
-        </section>
-      ` : ''}
+function summaryModeLabel(mode: SummaryMode): string {
+  if (mode === 'report') return 'full report';
+  if (mode === 'detailed') return 'detailed summary';
+  return 'general summary';
+}
 
-      ${result.sections.map((section) => `
-        <section>
-          <div class="mb-3 flex flex-wrap items-end justify-between gap-2 border-b border-slate-800 pb-2.5">
-            <div><div class="text-sm font-semibold text-slate-200">${escapeHtml(section.documentName)}</div><div class="mt-0.5 text-[10px] text-slate-600">${section.segmentCount.toLocaleString()} segments</div></div>
-            <span class="counter-pill">${section.points.length} points</span>
-          </div>
-          <div class="space-y-2.5">${section.points.map((point, index) => summaryPointCard(point, index)).join('') || `<div class="text-sm text-slate-600">No detailed points found for this source.</div>`}</div>
+function renderMeetingReport(report: MeetingReport): string {
+  return `
+    <div class="mt-6 space-y-6">
+      <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+        ${metricCard('Sources', String(report.sourceCount))}
+        ${metricCard('Segments', report.segmentCount.toLocaleString())}
+        ${metricCard('Words', report.wordCount.toLocaleString())}
+        ${metricCard('References', String(report.references.length))}
+      </div>
+
+      ${report.sections.map((section) => `
+        <section class="rounded-2xl border ${section.kind === 'overview' ? 'border-cyan-900/25 bg-cyan-950/[0.08]' : section.kind === 'follow-up' ? 'border-amber-900/25 bg-amber-950/[0.06]' : 'border-slate-800 bg-slate-950/30'} p-5">
+          <div class="text-sm font-semibold ${section.kind === 'follow-up' ? 'text-amber-200' : 'text-slate-100'}">${escapeHtml(section.title)}</div>
+          ${section.paragraphs.length ? `<div class="mt-4 space-y-4">${section.paragraphs.map((paragraph) => `<p class="text-[15px] leading-8 text-slate-300">${escapeHtml(paragraph.text)}${renderReferenceMarkers(paragraph.referenceIds)}</p>`).join('')}</div>` : ''}
+          ${section.bullets.length ? `<ul class="mt-4 space-y-2.5">${section.bullets.map((bullet) => `<li class="flex gap-3 text-sm leading-6 text-slate-300"><span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-600"></span><span>${escapeHtml(bullet.text)}${renderReferenceMarkers(bullet.referenceIds)}</span></li>`).join('')}</ul>` : ''}
         </section>
       `).join('')}
+
+      <details class="rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
+        <summary class="cursor-pointer select-none text-sm font-semibold text-slate-300">Sources & References (${report.references.length})</summary>
+        <div class="mt-4 space-y-2 border-t border-slate-800 pt-4">
+          ${report.references.map((reference) => `
+            <button data-action="jump-reference" data-document-id="${escapeHtml(reference.documentId)}" data-segment-id="${escapeHtml(reference.segmentId)}" class="block w-full rounded-lg border border-slate-800/70 bg-black/10 px-3 py-2 text-left hover:border-slate-700">
+              <div class="text-[11px] font-medium text-slate-400">[${reference.id}] ${escapeHtml(reference.documentName)} · ${escapeHtml(formatSourceMoment(reference.documentName, reference.displayTime))}</div>
+              <div class="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-600">${escapeHtml(reference.text)}</div>
+            </button>
+          `).join('')}
+        </div>
+      </details>
+
+      <div class="text-[10px] leading-5 text-slate-600">The narrative is generated locally from extractive and heuristic analysis. Language normalization uses an on-device browser translator when available. References remain attached so important statements can be checked against the original transcript.</div>
     </div>
   `;
 }
 
-function summaryPointCard(point: SummaryResult['points'][number], index: number): string {
-  return `
-    <article class="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
-      <div class="flex items-start gap-3">
-        <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-xs font-bold text-slate-400">${index + 1}</div>
-        <div class="min-w-0 flex-1">
-          <p class="text-sm leading-7 text-slate-200">${escapeHtml(point.text)}</p>
-          ${referenceButton(point.reference.documentId, point.reference.segmentId, point.reference.documentName, point.reference.displayTime)}
-        </div>
-      </div>
-    </article>
-  `;
+function renderReferenceMarkers(referenceIds: number[]): string {
+  if (!referenceIds.length) return '';
+  return `<span class="ml-1 whitespace-nowrap text-[9px] align-super text-cyan-500/70">${referenceIds.map((id) => `[${id}]`).join('')}</span>`;
 }
 
 function renderAsk(project: Project): string {
@@ -695,22 +696,22 @@ app.addEventListener('click', (event) => {
     segmentPage = 0;
     render();
   }
-  if (action === 'regenerate-summary') {
-    const project = getActiveProject();
-    if (project) {
-      const selectedIds = selectedDocumentIdsForSummary(project);
-      summaryResult = generateSummary(project, 10, selectedIds);
-      detailedSummaryResult = generateDetailedSummary(project, 7, selectedIds);
-      narrativeSummaryResult = generateNarrativeSummary(project, summaryMode, selectedIds);
-    }
-    render();
-  }
+  if (action === 'regenerate-summary') void regenerateMeetingReport();
   if (action === 'set-summary-mode') {
-    summaryMode = actionElement.dataset.summaryMode === 'detailed' ? 'detailed' : 'general';
-    narrativeSummaryResult = null;
+    const requested = actionElement.dataset.summaryMode;
+    summaryMode = requested === 'report' ? 'report' : requested === 'detailed' ? 'detailed' : 'general';
+    invalidateSummaryCache();
     render();
+    void regenerateMeetingReport();
   }
-  if (action === 'export-summary') exportSummary(actionElement.dataset.format ?? 'md');
+  if (action === 'set-summary-language') {
+    const requested = actionElement.dataset.summaryLanguage;
+    summaryLanguage = requested === 'tr' ? 'tr' : requested === 'en' ? 'en' : 'original';
+    invalidateSummaryCache();
+    render();
+    void regenerateMeetingReport();
+  }
+  if (action === 'export-summary') void exportSummary(actionElement.dataset.format ?? 'md');
   if (action === 'jump-reference') jumpToReference(actionElement.dataset.documentId ?? '', actionElement.dataset.segmentId ?? '');
   if (action === 'use-example') useExample(actionElement.dataset.question ?? '');
   if (action === 'export-document') exportDocument(actionElement.dataset.format ?? 'json');
@@ -724,9 +725,7 @@ app.addEventListener('change', (event) => {
     const project = getActiveProject();
     workspace.activeDocumentId = project?.documents[0]?.id ?? null;
     mergeSelection = new Set();
-    summaryResult = null;
-    detailedSummaryResult = null;
-    narrativeSummaryResult = null;
+    invalidateSummaryCache();
     answerResult = null;
     selectedSegmentId = null;
     segmentPage = 0;
@@ -886,9 +885,7 @@ function newProject() {
   workspace.activeProjectId = project.id;
   workspace.activeDocumentId = null;
   mergeSelection = new Set();
-  summaryResult = null;
-  detailedSummaryResult = null;
-  narrativeSummaryResult = null;
+  invalidateSummaryCache();
   answerResult = null;
   scheduleSave();
   render();
@@ -913,9 +910,7 @@ function deleteProject() {
   workspace.activeProjectId = workspace.projects[0].id;
   workspace.activeDocumentId = workspace.projects[0].documents[0]?.id ?? null;
   mergeSelection = new Set();
-  summaryResult = null;
-  detailedSummaryResult = null;
-  narrativeSummaryResult = null;
+  invalidateSummaryCache();
   answerResult = null;
   scheduleSave();
   render();
@@ -998,9 +993,7 @@ async function mergeSelected(downloadAfterMerge: boolean) {
       transcriptQuery = '';
       activeTab = 'transcript';
       project.updatedAt = new Date().toISOString();
-      summaryResult = null;
-      detailedSummaryResult = null;
-      narrativeSummaryResult = null;
+      invalidateSummaryCache();
       scheduleSave();
     }
   } catch (error) {
@@ -1047,109 +1040,113 @@ function selectedDocumentIdsForSummary(project: Project): string[] {
     .map((document) => document.id);
 }
 
-function invalidateSummaryCache() {
-  summaryResult = null;
-  detailedSummaryResult = null;
-  narrativeSummaryResult = null;
+function resolvedSummaryDocumentIds(project: Project, selectedIds: string[]): string[] {
+  const sourceIds = project.documents.filter((document) => document.kind === 'source').map((document) => document.id);
+  if (!selectedIds.length) return sourceIds;
+  const selected = new Set(selectedIds);
+  const resolved = sourceIds.filter((id) => selected.has(id));
+  return resolved.length ? resolved : sourceIds;
 }
 
-function exportSummary(format: string) {
+function reportMatchesScope(report: MeetingReport, mode: SummaryMode, language: SummaryLanguage, documentIds: string[]): boolean {
+  if (report.mode !== mode || report.language !== language) return false;
+  const left = [...report.documentIds].sort();
+  const right = [...documentIds].sort();
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function invalidateSummaryCache() {
+  meetingReport = null;
+  summaryError = null;
+  summaryProgress = null;
+}
+
+async function regenerateMeetingReport(): Promise<void> {
+  const project = getActiveProject();
+  if (!project || summaryBusy) return;
+  const selectedIds = selectedDocumentIdsForSummary(project);
+  summaryBusy = true;
+  summaryError = null;
+  summaryProgress = `Building ${summaryModeLabel(summaryMode)} from the selected transcript scope…`;
+  meetingReport = null;
+  render();
+
+  try {
+    const base = generateMeetingReport(project, summaryMode, selectedIds);
+    if (summaryLanguage === 'original') {
+      meetingReport = base;
+      summaryProgress = null;
+      return;
+    }
+
+    summaryProgress = `Normalizing the report to ${summaryLanguage === 'tr' ? 'Türkçe' : 'English'}…`;
+    render();
+    meetingReport = await translateMeetingReport(base, summaryLanguage, (done, total) => {
+      summaryProgress = `Translating report ${done}/${total}…`;
+      updateSummaryProgressOnly();
+    });
+    summaryProgress = null;
+  } catch (error) {
+    if (error instanceof TranslationUnavailableError) {
+      const fallback = generateMeetingReport(project, summaryMode, selectedIds);
+      meetingReport = fallback;
+      summaryError = `${error.message} The report was generated in Original mode instead. Use a Chromium browser with the on-device Translator API enabled to normalize mixed Turkish/English content without sending transcript text to an external service.`;
+      summaryLanguage = 'original';
+    } else {
+      summaryError = error instanceof Error ? error.message : 'Summary generation failed.';
+    }
+    summaryProgress = null;
+  } finally {
+    summaryBusy = false;
+    render();
+  }
+}
+
+function updateSummaryProgressOnly() {
+  const notice = document.querySelector<HTMLElement>('[data-summary-progress]');
+  if (notice && summaryProgress) notice.textContent = summaryProgress;
+}
+
+async function exportSummary(format: string): Promise<void> {
   const project = getActiveProject();
   if (!project) return;
-  const selectedIds = selectedDocumentIdsForSummary(project);
-  if (!summaryResult) summaryResult = generateSummary(project, 10, selectedIds);
-  if (!detailedSummaryResult) detailedSummaryResult = generateDetailedSummary(project, 7, selectedIds);
-  if (!narrativeSummaryResult || narrativeSummaryResult.mode !== summaryMode) {
-    narrativeSummaryResult = generateNarrativeSummary(project, summaryMode, selectedIds);
-  }
+  if (!meetingReport) await regenerateMeetingReport();
+  if (!meetingReport) return;
 
   const safeName = project.name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'transcript-collection';
-  if (format === 'html') {
-    const html = summaryMode === 'general'
-      ? buildGeneralSummaryHtml(project.name, summaryResult, narrativeSummaryResult)
-      : buildDetailedSummaryHtml(project.name, detailedSummaryResult, narrativeSummaryResult);
-    downloadHtmlContent(html, `${safeName}-${summaryMode}-summary.html`);
-    return;
+  const suffix = summaryMode === 'report' ? 'full-report' : `${summaryMode}-summary`;
+  const languageSuffix = meetingReport.language === 'original' ? '' : `-${meetingReport.language}`;
+  const stem = `${safeName}-${suffix}${languageSuffix}`;
+
+  try {
+    if (format === 'txt') {
+      downloadTextContent(reportToText(meetingReport), `${stem}.txt`);
+      return;
+    }
+    if (format === 'md') {
+      downloadTextContent(reportToMarkdown(meetingReport), `${stem}.md`, true);
+      return;
+    }
+    if (format === 'html') {
+      downloadHtmlContent(reportToHtml(meetingReport), `${stem}.html`);
+      return;
+    }
+    if (format === 'word') {
+      downloadWordReport(meetingReport, `${stem}.doc`);
+      return;
+    }
+    if (format === 'pdf') {
+      operationStatus = 'Preparing PDF…';
+      updateOperationStatus();
+      await downloadPdfReport(meetingReport, `${stem}.pdf`);
+      operationStatus = null;
+      render();
+    }
+  } catch (error) {
+    operationStatus = null;
+    window.alert(error instanceof Error ? error.message : 'Export failed.');
+    render();
   }
-
-  const markdown = format === 'md';
-  const content = summaryMode === 'general'
-    ? buildGeneralSummaryExport(project.name, summaryResult, narrativeSummaryResult, markdown)
-    : buildDetailedSummaryExport(project.name, detailedSummaryResult, narrativeSummaryResult, markdown);
-  downloadTextContent(content, `${safeName}-${summaryMode}-summary.${markdown ? 'md' : 'txt'}`, markdown);
-}
-
-function buildGeneralSummaryExport(name: string, result: SummaryResult, narrative: NarrativeSummaryResult, markdown: boolean): string {
-  const narrativeText = narrative.paragraphs.map((paragraph) => paragraph.text).join('\n\n');
-  if (markdown) {
-    const points = result.points.map((point, index) => `${index + 1}. ${point.text}\n   - Source: ${point.reference.documentName} · ${formatSourceMoment(point.reference.documentName, point.reference.displayTime)}`).join('\n');
-    return `# General Summary — ${name}\n\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\n## Meeting Summary\n\n${narrativeText || '_No narrative summary generated._'}\n\n## Key Points\n\n${points || '_No key points found._'}\n`;
-  }
-  const points = result.points.map((point, index) => `${index + 1}. ${point.text}\n   Source: ${point.reference.documentName} · ${formatSourceMoment(point.reference.documentName, point.reference.displayTime)}`).join('\n\n');
-  return `GENERAL SUMMARY — ${name}\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\nMEETING SUMMARY\n${narrativeText || 'No narrative summary generated.'}\n\nKEY POINTS\n${points || 'No key points found.'}\n`;
-}
-
-function buildDetailedSummaryExport(name: string, result: DetailedSummaryResult, narrative: NarrativeSummaryResult, markdown: boolean): string {
-  const narrativeText = narrative.paragraphs.map((paragraph) => paragraph.text).join('\n\n');
-  const followUps = result.followUps.map((point, index) => {
-    const source = `${point.reference.documentName} · ${formatSourceMoment(point.reference.documentName, point.reference.displayTime)}`;
-    return markdown ? `${index + 1}. ${point.text}\n   - Source: ${source}` : `${index + 1}. ${point.text}\n   Source: ${source}`;
-  }).join(markdown ? '\n' : '\n\n');
-
-  const sections = result.sections.map((section) => {
-    const points = section.points.map((point, index) => {
-      const source = `${point.reference.documentName} · ${formatSourceMoment(point.reference.documentName, point.reference.displayTime)}`;
-      return markdown ? `${index + 1}. ${point.text}\n   - Source: ${source}` : `${index + 1}. ${point.text}\n   Source: ${source}`;
-    }).join(markdown ? '\n' : '\n\n');
-    return markdown
-      ? `## ${section.documentName}\n\n${points || '_No summary points._'}`
-      : `=== ${section.documentName} ===\n${points || 'No summary points.'}`;
-  }).join('\n\n');
-
-  if (markdown) {
-    return `# Detailed Summary — ${name}\n\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\n## Meeting Summary\n\n${narrativeText || '_No narrative summary generated._'}\n\n## Possible Open / Follow-up Items\n\n${followUps || '_None detected._'}\n\n## Source Details\n\n${sections}\n`;
-  }
-  return `DETAILED SUMMARY — ${name}\nSources: ${result.sourceCount} · Segments: ${result.segmentCount}\n\nMEETING SUMMARY\n${narrativeText || 'No narrative summary generated.'}\n\nPOSSIBLE OPEN / FOLLOW-UP ITEMS\n${followUps || 'None detected.'}\n\nSOURCE DETAILS\n${sections}\n`;
-}
-
-function buildGeneralSummaryHtml(name: string, result: SummaryResult, narrative: NarrativeSummaryResult): string {
-  const points = result.points.map((point) => `<li><p>${escapeHtml(point.text)}</p><small>${escapeHtml(point.reference.documentName)} · ${escapeHtml(formatSourceMoment(point.reference.documentName, point.reference.displayTime))}</small></li>`).join('');
-  return summaryHtmlDocument(name, 'General Meeting Summary', result.sourceCount, result.segmentCount, narrative, `<section><h2>Key Points</h2><ol>${points}</ol></section>`);
-}
-
-function buildDetailedSummaryHtml(name: string, result: DetailedSummaryResult, narrative: NarrativeSummaryResult): string {
-  const followUps = result.followUps.map((point) => `<li><p>${escapeHtml(point.text)}</p><small>${escapeHtml(point.reference.documentName)} · ${escapeHtml(formatSourceMoment(point.reference.documentName, point.reference.displayTime))}</small></li>`).join('');
-  const sections = result.sections.map((section) => {
-    const points = section.points.map((point) => `<li><p>${escapeHtml(point.text)}</p><small>${escapeHtml(formatSourceMoment(point.reference.documentName, point.reference.displayTime))}</small></li>`).join('');
-    return `<section><h2>${escapeHtml(section.documentName)}</h2><ol>${points}</ol></section>`;
-  }).join('');
-  return summaryHtmlDocument(name, 'Detailed Meeting Summary', result.sourceCount, result.segmentCount, narrative, `<section><h2>Possible Open / Follow-up Items</h2><ol>${followUps || '<li>None detected.</li>'}</ol></section>${sections}`);
-}
-
-function summaryHtmlDocument(
-  name: string,
-  title: string,
-  sourceCount: number,
-  segmentCount: number,
-  narrative: NarrativeSummaryResult,
-  extraContent: string,
-): string {
-  const paragraphs = narrative.paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph.text)}</p>`).join('');
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)} — ${escapeHtml(name)}</title>
-<style>body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:920px;margin:48px auto;padding:0 24px;color:#172033;line-height:1.7}h1{font-size:30px;margin-bottom:6px}h2{margin-top:34px;font-size:19px}.meta{color:#667085;font-size:14px;margin-bottom:32px}.narrative{font-size:16px;background:#f7f9fc;border:1px solid #e5e9f0;border-radius:14px;padding:20px 24px}.narrative p{margin:0 0 16px}.narrative p:last-child{margin-bottom:0}li{margin-bottom:14px}li p{margin:0}small{color:#667085}section{margin-top:28px}@media print{body{margin:0;max-width:none}.narrative{break-inside:avoid}}</style>
-</head>
-<body>
-<h1>${escapeHtml(title)}</h1>
-<div class="meta">${escapeHtml(name)} · ${sourceCount} sources · ${segmentCount.toLocaleString()} segments</div>
-<section><h2>Meeting Summary</h2><div class="narrative">${paragraphs || '<p>No narrative summary generated.</p>'}</div></section>
-${extraContent}
-</body>
-</html>`;
 }
 
 function exportDocument(format: string) {

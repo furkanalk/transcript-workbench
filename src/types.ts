@@ -93,7 +93,6 @@ export interface DetailedSummaryResult {
   followUps: SummaryPoint[];
 }
 
-
 export type NarrativeSummaryKind = 'overview' | 'discussion' | 'decision' | 'follow-up' | 'conclusion';
 
 export interface NarrativeSummaryParagraph {
@@ -111,6 +110,54 @@ export interface NarrativeSummaryResult {
   paragraphs: NarrativeSummaryParagraph[];
 }
 
+export type SummaryMode = 'general' | 'detailed' | 'report';
+export type SummaryLanguage = 'original' | 'en' | 'tr';
+export type ReportSectionKind = 'overview' | 'discussion' | 'technical' | 'decision' | 'risk' | 'follow-up' | 'takeaway';
+
+export interface ReportReference {
+  id: number;
+  documentId: string;
+  documentName: string;
+  segmentId: string;
+  sequenceId: number;
+  displayTime: string;
+  text: string;
+}
+
+export interface ReportParagraph {
+  text: string;
+  referenceIds: number[];
+}
+
+export interface ReportBullet {
+  text: string;
+  referenceIds: number[];
+}
+
+export interface ReportSection {
+  id: string;
+  title: string;
+  kind: ReportSectionKind;
+  paragraphs: ReportParagraph[];
+  bullets: ReportBullet[];
+}
+
+export interface MeetingReport {
+  generatedAt: string;
+  title: string;
+  mode: SummaryMode;
+  language: SummaryLanguage;
+  sourceCount: number;
+  segmentCount: number;
+  documentIds: string[];
+  sections: ReportSection[];
+  keyPoints: ReportBullet[];
+  decisions: ReportBullet[];
+  openItems: ReportBullet[];
+  references: ReportReference[];
+  wordCount: number;
+}
+
 export interface AnswerResult {
   answer: string;
   confidence: 'strong' | 'moderate' | 'weak' | 'not-found';
@@ -120,4 +167,3 @@ export interface AnswerResult {
 export type ViewMode = 'raw' | 'clean';
 export type ConfidenceFilter = 'all' | 'review' | 'warning' | 'good';
 export type AppTab = 'transcript' | 'summary' | 'ask';
-export type SummaryMode = 'general' | 'detailed';
