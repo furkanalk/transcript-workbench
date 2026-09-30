@@ -45,10 +45,12 @@ instead of incorrectly presenting a synthetic merged value as a wall-clock times
 Three report depths are available and operate on the currently selected source transcripts:
 
 - **General** — executive-style overview targeting roughly one page when enough material is available.
-- **Detailed** — expanded meeting summary targeting roughly three pages with technical topics, decisions, risks, and open items.
-- **Full Report** — longer meeting analysis targeting roughly five to six pages when the selected transcripts contain enough material.
+- **Detailed** — structured technical assessment organized by topic, including requirement/current state, assessment, implementation options, decisions, and open points.
+- **Full Report** — broader discovery-style analysis covering the main technical areas plus cross-cutting risks, decisions, follow-up actions, and key takeaways.
 
-The main narrative is organized by discussion themes instead of source filenames. Source filenames and original timestamps remain available in the collapsible reference section and exported footnotes.
+The report engine is finding-oriented rather than conversation-oriented: it extracts structured findings from the selected transcript scope instead of reproducing the meeting chronology. Source filenames never appear as section openers in the professional report body.
+
+Source filenames and original timestamps remain available inside the application for traceability. They are **excluded from exported reports by default** and can be enabled explicitly with the `Include source references in exported report` option when an internal evidence copy is required.
 
 Output can be generated in **Original**, **English**, or **Türkçe**. English/Türkçe normalization uses the browser's on-device Translator API when available, while technical terms such as Kong, OIDC, ACL, CIDR, Event Gateway, Redis, and Hazelcast are protected from literal word-by-word translation.
 
@@ -64,7 +66,7 @@ Generated summaries can be exported as:
 - Word-compatible document (`.doc`)
 - PDF (`.pdf`)
 
-PDF export loads the pdfmake rendering library in the browser when needed. Transcript content is rendered client-side and is not uploaded by the application.
+PDF export loads the pdfmake rendering library in the browser when needed. Transcript content is rendered client-side and is not uploaded by the application. Professional exports omit transcript filenames and timestamp references by default; internal evidence references are opt-in.
 
 ## Text cleanup
 

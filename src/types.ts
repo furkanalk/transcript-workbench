@@ -113,6 +113,7 @@ export interface NarrativeSummaryResult {
 export type SummaryMode = 'general' | 'detailed' | 'report';
 export type SummaryLanguage = 'original' | 'en' | 'tr';
 export type ReportSectionKind = 'overview' | 'discussion' | 'technical' | 'decision' | 'risk' | 'follow-up' | 'takeaway';
+export type ReportSubsectionKind = 'requirement' | 'current-state' | 'assessment' | 'options' | 'decision' | 'risk' | 'open-item' | 'evidence';
 
 export interface ReportReference {
   id: number;
@@ -134,12 +135,21 @@ export interface ReportBullet {
   referenceIds: number[];
 }
 
+export interface ReportSubsection {
+  id: string;
+  title: string;
+  kind: ReportSubsectionKind;
+  paragraphs: ReportParagraph[];
+  bullets: ReportBullet[];
+}
+
 export interface ReportSection {
   id: string;
   title: string;
   kind: ReportSectionKind;
   paragraphs: ReportParagraph[];
   bullets: ReportBullet[];
+  subsections?: ReportSubsection[];
 }
 
 export interface MeetingReport {

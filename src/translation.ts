@@ -1,4 +1,4 @@
-import type { MeetingReport, ReportBullet, ReportParagraph, ReportSection, SummaryLanguage } from './types';
+import type { MeetingReport, ReportBullet, ReportParagraph, ReportSection, ReportSubsection, SummaryLanguage } from './types';
 
 interface TranslatorInstance {
   translate(text: string): Promise<string>;
@@ -32,9 +32,9 @@ const PROTECTED_TERMS = [
 const SECTION_TITLES_TR: Record<string, string> = {
   'Executive Summary': 'Yönetici Özeti',
   'Developer Portal & Developer Experience': 'Developer Portal ve Developer Experience',
-  'Authentication, Authorization & Credential Flows': 'Kimlik Doğrulama, Yetkilendirme ve Credential Akışları',
-  'ACL, CIDR & IP Restriction': 'ACL, CIDR ve IP Restriction',
-  'Event Gateway & Async APIs': 'Event Gateway ve Async API’ler',
+  'Authentication, Authorization & Credential Management': 'Kimlik Doğrulama, Yetkilendirme ve Credential Yönetimi',
+  'Access Control, ACL & Dynamic IP Whitelisting': 'Access Control, ACL ve Dinamik IP Whitelisting',
+  'Event Gateway & Async API': 'Event Gateway ve Async API',
   'Konnect Architecture, Security & Data Residency': 'Konnect Mimarisi, Güvenlik ve Veri Yerleşimi',
   'Rate Limiting & Traffic Control': 'Rate Limiting ve Trafik Kontrolü',
   'Caching & In-Memory Data': 'Caching ve In-Memory Veri',
@@ -43,14 +43,28 @@ const SECTION_TITLES_TR: Record<string, string> = {
   'Performance, Testing & Scalability': 'Performans, Test ve Ölçeklenebilirlik',
   'API Transformation & Custom Extensions': 'API Dönüşümü ve Custom Extension’lar',
   'Network & Transport Security': 'Network ve Transport Güvenliği',
+  'Deployment, Environments & Resilience': 'Deployment, Ortamlar ve Dayanıklılık',
   'Additional Technical Discussions': 'Ek Teknik Görüşmeler',
   'Approaches Reviewed': 'Değerlendirilen Yaklaşımlar',
   'Approaches Evaluated & Demonstrated': 'Değerlendirilen ve Demo Edilen Yaklaşımlar',
-  'Risks, Constraints & Architectural Considerations': 'Riskler, Kısıtlar ve Mimari Değerlendirmeler',
+  'Cross-Cutting Risks & Architectural Considerations': 'Genel Riskler ve Mimari Değerlendirmeler',
   'Decisions & Agreed Direction': 'Kararlar ve Mutabık Kalınan Yön',
   'Outstanding Questions & Follow-up Actions': 'Açık Sorular ve Takip Aksiyonları',
+  'Outstanding Items & Recommended Next Steps': 'Açık Konular ve Önerilen Sonraki Adımlar',
+  'Outstanding Items': 'Açık Konular',
+  'Main Topics Discussed': 'Görüşülen Ana Konular',
+  'Key Outcomes': 'Temel Sonuçlar',
   'Key Points': 'Öne Çıkan Noktalar',
   'Key Takeaways': 'Öne Çıkan Sonuçlar',
+};
+
+
+const SUBSECTION_TITLES_TR: Record<string, string> = {
+  'Requirement & Current State': 'Gereksinim ve Mevcut Durum',
+  'Assessment & Considerations': 'Değerlendirme ve Dikkate Alınması Gerekenler',
+  'Implementation Options': 'Uygulama Seçenekleri',
+  'Decisions / Agreed Direction': 'Kararlar / Mutabık Kalınan Yön',
+  'Open Points': 'Açık Konular',
 };
 
 export class TranslationUnavailableError extends Error {
@@ -94,11 +108,18 @@ export async function translateMeetingReport(
     ...bullet,
     text: translated.get(bullet.text) ?? bullet.text,
   });
+  const mapSubsection = (subsection: ReportSubsection): ReportSubsection => ({
+    ...subsection,
+    title: localizeSubsectionTitle(subsection.title, language, translated),
+    paragraphs: subsection.paragraphs.map(mapParagraph),
+    bullets: subsection.bullets.map(mapBullet),
+  });
   const sections = report.sections.map<ReportSection>((section) => ({
     ...section,
     title: localizeSectionTitle(section.title, language, translated),
     paragraphs: section.paragraphs.map(mapParagraph),
     bullets: section.bullets.map(mapBullet),
+    subsections: section.subsections?.map(mapSubsection),
   }));
 
   const output: MeetingReport = {
@@ -118,6 +139,10 @@ function collectTranslatableStrings(report: MeetingReport): string[] {
     ...report.sections.flatMap((section) => [
       ...section.paragraphs.map((paragraph) => paragraph.text),
       ...section.bullets.map((bullet) => bullet.text),
+      ...(section.subsections ?? []).flatMap((subsection) => [
+        ...subsection.paragraphs.map((paragraph) => paragraph.text),
+        ...subsection.bullets.map((bullet) => bullet.text),
+      ]),
     ]),
     ...report.keyPoints.map((bullet) => bullet.text),
     ...report.decisions.map((bullet) => bullet.text),
@@ -128,6 +153,11 @@ function collectTranslatableStrings(report: MeetingReport): string[] {
 
 function localizeSectionTitle(title: string, language: SummaryLanguage, translated: Map<string, string>): string {
   if (language === 'tr') return SECTION_TITLES_TR[title] ?? translated.get(title) ?? title;
+  return title;
+}
+
+function localizeSubsectionTitle(title: string, language: SummaryLanguage, translated: Map<string, string>): string {
+  if (language === 'tr') return SUBSECTION_TITLES_TR[title] ?? translated.get(title) ?? title;
   return title;
 }
 
@@ -199,7 +229,16 @@ function detectSentenceLanguage(value: string): 'en' | 'tr' | null {
 
 function countReportWords(report: MeetingReport): number {
   const value = report.sections
-    .flatMap((section) => [section.title, ...section.paragraphs.map((paragraph) => paragraph.text), ...section.bullets.map((bullet) => bullet.text)])
+    .flatMap((section) => [
+      section.title,
+      ...section.paragraphs.map((paragraph) => paragraph.text),
+      ...section.bullets.map((bullet) => bullet.text),
+      ...(section.subsections ?? []).flatMap((subsection) => [
+        subsection.title,
+        ...subsection.paragraphs.map((paragraph) => paragraph.text),
+        ...subsection.bullets.map((bullet) => bullet.text),
+      ]),
+    ])
     .join(' ');
   return value.trim() ? value.trim().split(/\s+/).length : 0;
 }

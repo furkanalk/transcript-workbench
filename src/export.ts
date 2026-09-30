@@ -63,7 +63,13 @@ export function downloadHtmlContent(content: string, filename: string) {
 }
 
 
-export function reportToText(report: MeetingReport): string {
+export interface ReportExportOptions {
+  /** Source filenames/timestamps are useful for internal traceability but are hidden in professional exports by default. */
+  includeReferences?: boolean;
+}
+
+export function reportToText(report: MeetingReport, options: ReportExportOptions = {}): string {
+  const includeReferences = options.includeReferences === true;
   const lines: string[] = [];
   lines.push(reportTitle(report));
   lines.push(reportMeta(report));
@@ -71,20 +77,32 @@ export function reportToText(report: MeetingReport): string {
   for (const section of report.sections) {
     lines.push(section.title.toUpperCase());
     for (const paragraph of section.paragraphs) {
-      lines.push(`${paragraph.text}${referenceSuffix(paragraph.referenceIds)}`);
+      lines.push(`${paragraph.text}${includeReferences ? referenceSuffix(paragraph.referenceIds) : ''}`);
       lines.push('');
     }
-    for (const bullet of section.bullets) lines.push(`- ${bullet.text}${referenceSuffix(bullet.referenceIds)}`);
+    for (const bullet of section.bullets) lines.push(`- ${bullet.text}${includeReferences ? referenceSuffix(bullet.referenceIds) : ''}`);
     if (section.bullets.length) lines.push('');
+    for (const subsection of section.subsections ?? []) {
+      lines.push(subsection.title);
+      for (const paragraph of subsection.paragraphs) {
+        lines.push(`${paragraph.text}${includeReferences ? referenceSuffix(paragraph.referenceIds) : ''}`);
+        lines.push('');
+      }
+      for (const bullet of subsection.bullets) lines.push(`- ${bullet.text}${includeReferences ? referenceSuffix(bullet.referenceIds) : ''}`);
+      lines.push('');
+    }
   }
-  lines.push(referencesTitle(report).toUpperCase());
-  for (const reference of report.references) {
-    lines.push(`[${reference.id}] ${reference.documentName} · ${formatSourceMoment(reference.documentName, reference.displayTime)} · segment #${reference.sequenceId}`);
+  if (includeReferences) {
+    lines.push(referencesTitle(report).toUpperCase());
+    for (const reference of report.references) {
+      lines.push(`[${reference.id}] ${reference.documentName} · ${formatSourceMoment(reference.documentName, reference.displayTime)} · segment #${reference.sequenceId}`);
+    }
   }
   return `${lines.join('\n').trim()}\n`;
 }
 
-export function reportToMarkdown(report: MeetingReport): string {
+export function reportToMarkdown(report: MeetingReport, options: ReportExportOptions = {}): string {
+  const includeReferences = options.includeReferences === true;
   const lines: string[] = [];
   lines.push(`# ${reportTitle(report)}`);
   lines.push('');
@@ -94,24 +112,39 @@ export function reportToMarkdown(report: MeetingReport): string {
     lines.push(`## ${section.title}`);
     lines.push('');
     for (const paragraph of section.paragraphs) {
-      lines.push(`${paragraph.text}${referenceSuffix(paragraph.referenceIds)}`);
+      lines.push(`${paragraph.text}${includeReferences ? referenceSuffix(paragraph.referenceIds) : ''}`);
       lines.push('');
     }
-    for (const bullet of section.bullets) lines.push(`- ${bullet.text}${referenceSuffix(bullet.referenceIds)}`);
+    for (const bullet of section.bullets) lines.push(`- ${bullet.text}${includeReferences ? referenceSuffix(bullet.referenceIds) : ''}`);
     if (section.bullets.length) lines.push('');
+    for (const subsection of section.subsections ?? []) {
+      lines.push(`### ${subsection.title}`);
+      lines.push('');
+      for (const paragraph of subsection.paragraphs) {
+        lines.push(`${paragraph.text}${includeReferences ? referenceSuffix(paragraph.referenceIds) : ''}`);
+        lines.push('');
+      }
+      for (const bullet of subsection.bullets) lines.push(`- ${bullet.text}${includeReferences ? referenceSuffix(bullet.referenceIds) : ''}`);
+      lines.push('');
+    }
   }
-  lines.push(`## ${referencesTitle(report)}`);
-  lines.push('');
-  for (const reference of report.references) {
-    lines.push(`[${reference.id}]: ${reference.documentName} · ${formatSourceMoment(reference.documentName, reference.displayTime)} · segment #${reference.sequenceId}`);
+  if (includeReferences) {
+    lines.push(`## ${referencesTitle(report)}`);
+    lines.push('');
+    for (const reference of report.references) {
+      lines.push(`[${reference.id}]: ${reference.documentName} · ${formatSourceMoment(reference.documentName, reference.displayTime)} · segment #${reference.sequenceId}`);
+    }
   }
   return `${lines.join('\n').trim()}\n`;
 }
 
-export function reportToHtml(report: MeetingReport, wordCompatible = false): string {
-  const sections = report.sections.map((section) => reportSectionHtml(section)).join('');
-  const references = report.references.map((reference) => `
-    <li id="ref-${reference.id}"><strong>[${reference.id}]</strong> ${escapeHtml(reference.documentName)} · ${escapeHtml(formatSourceMoment(reference.documentName, reference.displayTime))} · segment #${reference.sequenceId}</li>`).join('');
+export function reportToHtml(report: MeetingReport, wordCompatible = false, options: ReportExportOptions = {}): string {
+  const includeReferences = options.includeReferences === true;
+  const sections = report.sections.map((section) => reportSectionHtml(section, includeReferences)).join('');
+  const references = includeReferences
+    ? `<section class="references"><h2>${escapeHtml(referencesTitle(report))}</h2><ol class="refs">${report.references.map((reference) => `
+    <li id="ref-${reference.id}"><strong>[${reference.id}]</strong> ${escapeHtml(reference.documentName)} · ${escapeHtml(formatSourceMoment(reference.documentName, reference.displayTime))} · segment #${reference.sequenceId}</li>`).join('')}</ol></section>`
+    : '';
   const officeNamespaces = wordCompatible ? ' xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"' : '';
   return `<!doctype html>
 <html${officeNamespaces} lang="${report.language === 'tr' ? 'tr' : 'en'}">
@@ -120,26 +153,27 @@ export function reportToHtml(report: MeetingReport, wordCompatible = false): str
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(reportTitle(report))}</title>
 <style>
-@page{size:A4;margin:20mm 18mm 20mm 18mm}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;max-width:900px;margin:42px auto;padding:0 22px;color:#172033;line-height:1.62;font-size:11.2pt}h1{font-size:24pt;margin:0 0 6px}h2{font-size:15pt;margin:28px 0 10px;border-bottom:1px solid #dfe4ea;padding-bottom:6px}p{margin:0 0 12px}ul{margin:8px 0 16px 22px;padding:0}li{margin:0 0 8px}.meta{color:#667085;font-size:9.5pt;margin-bottom:28px}.refs{font-size:9pt;color:#475467}.ref{font-size:8pt;vertical-align:super;color:#344054;margin-left:2px}.report-section{break-inside:auto}.references{break-before:page}.footer-note{margin-top:28px;color:#98a2b3;font-size:8.5pt}@media print{body{margin:0;max-width:none;padding:0}h2{break-after:avoid}p,li{orphans:3;widows:3}}
+@page{size:A4;margin:20mm 18mm 20mm 18mm}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;max-width:900px;margin:42px auto;padding:0 22px;color:#172033;line-height:1.62;font-size:11.2pt}h1{font-size:24pt;margin:0 0 6px}h2{font-size:15pt;margin:28px 0 10px;border-bottom:1px solid #dfe4ea;padding-bottom:6px}h3{font-size:11.5pt;margin:18px 0 8px;color:#344054}p{margin:0 0 12px}ul{margin:8px 0 16px 22px;padding:0}li{margin:0 0 8px}.meta{color:#667085;font-size:9.5pt;margin-bottom:28px}.refs{font-size:9pt;color:#475467}.ref{font-size:8pt;vertical-align:super;color:#344054;margin-left:2px}.report-section{break-inside:auto}.report-subsection{margin:14px 0 4px}.references{break-before:page}.footer-note{margin-top:28px;color:#98a2b3;font-size:8.5pt}@media print{body{margin:0;max-width:none;padding:0}h2,h3{break-after:avoid}p,li{orphans:3;widows:3}}
 </style>
 </head>
 <body>
 <h1>${escapeHtml(reportTitle(report))}</h1>
 <div class="meta">${escapeHtml(report.title)} · ${escapeHtml(reportMeta(report))}</div>
 ${sections}
-<section class="references"><h2>${escapeHtml(referencesTitle(report))}</h2><ol class="refs">${references}</ol></section>
+${references}
 <div class="footer-note">${escapeHtml(report.language === 'tr' ? 'Seçili transcript kapsamından Transcript Workbench tarafından oluşturuldu.' : 'Generated by Transcript Workbench from the selected transcript scope.')}</div>
 </body>
 </html>`;
 }
 
-export function downloadWordReport(report: MeetingReport, filename: string): void {
-  const html = reportToHtml(report, true);
+export function downloadWordReport(report: MeetingReport, filename: string, options: ReportExportOptions = {}): void {
+  const html = reportToHtml(report, true, options);
   const blob = new Blob(['\ufeff', html], { type: 'application/msword;charset=utf-8' });
   downloadBlob(blob, filename.endsWith('.doc') ? filename : `${filename}.doc`);
 }
 
-export async function downloadPdfReport(report: MeetingReport, filename: string): Promise<void> {
+export async function downloadPdfReport(report: MeetingReport, filename: string, options: ReportExportOptions = {}): Promise<void> {
+  const includeReferences = options.includeReferences === true;
   const pdfMake = await ensurePdfMake();
   const content: unknown[] = [
     { text: reportTitle(report), style: 'title' },
@@ -149,21 +183,35 @@ export async function downloadPdfReport(report: MeetingReport, filename: string)
   for (const section of report.sections) {
     content.push({ text: section.title, style: 'heading', margin: [0, 14, 0, 7] });
     for (const paragraph of section.paragraphs) {
-      content.push({ text: [{ text: paragraph.text }, { text: referenceSuffix(paragraph.referenceIds), style: 'reference' }], style: 'paragraph' });
+      content.push({ text: reportPdfText(paragraph.text, paragraph.referenceIds, includeReferences), style: 'paragraph' });
     }
     if (section.bullets.length) {
       content.push({
-        ul: section.bullets.map((bullet) => ({ text: [{ text: bullet.text }, { text: referenceSuffix(bullet.referenceIds), style: 'reference' }] })),
+        ul: section.bullets.map((bullet) => ({ text: reportPdfText(bullet.text, bullet.referenceIds, includeReferences) })),
         margin: [8, 2, 0, 10],
       });
     }
+    for (const subsection of section.subsections ?? []) {
+      content.push({ text: subsection.title, style: 'subheading', margin: [0, 8, 0, 5] });
+      for (const paragraph of subsection.paragraphs) {
+        content.push({ text: reportPdfText(paragraph.text, paragraph.referenceIds, includeReferences), style: 'paragraph' });
+      }
+      if (subsection.bullets.length) {
+        content.push({
+          ul: subsection.bullets.map((bullet) => ({ text: reportPdfText(bullet.text, bullet.referenceIds, includeReferences) })),
+          margin: [12, 0, 0, 8],
+        });
+      }
+    }
   }
 
-  content.push({ text: referencesTitle(report), style: 'heading', pageBreak: 'before', margin: [0, 0, 0, 7] });
-  content.push({
-    ol: report.references.map((reference) => `${reference.documentName} · ${formatSourceMoment(reference.documentName, reference.displayTime)} · segment #${reference.sequenceId}`),
-    style: 'references',
-  });
+  if (includeReferences) {
+    content.push({ text: referencesTitle(report), style: 'heading', pageBreak: 'before', margin: [0, 0, 0, 7] });
+    content.push({
+      ol: report.references.map((reference) => `${reference.documentName} · ${formatSourceMoment(reference.documentName, reference.displayTime)} · segment #${reference.sequenceId}`),
+      style: 'references',
+    });
+  }
 
   const definition = {
     pageSize: 'A4',
@@ -174,6 +222,7 @@ export async function downloadPdfReport(report: MeetingReport, filename: string)
       title: { fontSize: 22, bold: true, color: '#172033', margin: [0, 0, 0, 4] },
       meta: { fontSize: 9, color: '#667085', margin: [0, 0, 0, 16] },
       heading: { fontSize: 14, bold: true, color: '#172033' },
+      subheading: { fontSize: 11.5, bold: true, color: '#344054' },
       paragraph: { fontSize: 10.5, color: '#344054', margin: [0, 0, 0, 9] },
       reference: { fontSize: 7.5, color: '#667085' },
       references: { fontSize: 8.5, color: '#475467' },
@@ -191,20 +240,30 @@ export async function downloadPdfReport(report: MeetingReport, filename: string)
   pdfMake.createPdf(definition).download(outputName);
 }
 
-function reportSectionHtml(section: ReportSection): string {
-  const paragraphs = section.paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph.text)}${referenceLinks(paragraph.referenceIds)}</p>`).join('');
-  const bullets = section.bullets.length ? `<ul>${section.bullets.map((bullet) => `<li>${escapeHtml(bullet.text)}${referenceLinks(bullet.referenceIds)}</li>`).join('')}</ul>` : '';
-  return `<section class="report-section"><h2>${escapeHtml(section.title)}</h2>${paragraphs}${bullets}</section>`;
+function reportSectionHtml(section: ReportSection, includeReferences: boolean): string {
+  const paragraphs = section.paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph.text)}${includeReferences ? referenceLinks(paragraph.referenceIds) : ''}</p>`).join('');
+  const bullets = section.bullets.length ? `<ul>${section.bullets.map((bullet) => `<li>${escapeHtml(bullet.text)}${includeReferences ? referenceLinks(bullet.referenceIds) : ''}</li>`).join('')}</ul>` : '';
+  const subsections = (section.subsections ?? []).map((subsection) => {
+    const subsectionParagraphs = subsection.paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph.text)}${includeReferences ? referenceLinks(paragraph.referenceIds) : ''}</p>`).join('');
+    const subsectionBullets = subsection.bullets.length ? `<ul>${subsection.bullets.map((bullet) => `<li>${escapeHtml(bullet.text)}${includeReferences ? referenceLinks(bullet.referenceIds) : ''}</li>`).join('')}</ul>` : '';
+    return `<div class="report-subsection"><h3>${escapeHtml(subsection.title)}</h3>${subsectionParagraphs}${subsectionBullets}</div>`;
+  }).join('');
+  return `<section class="report-section"><h2>${escapeHtml(section.title)}</h2>${paragraphs}${bullets}${subsections}</section>`;
+}
+
+function reportPdfText(text: string, referenceIds: number[], includeReferences: boolean): unknown {
+  if (!includeReferences || !referenceIds.length) return text;
+  return [{ text }, { text: referenceSuffix(referenceIds), style: 'reference' }];
 }
 
 function reportTitle(report: MeetingReport): string {
   if (report.language === 'tr') {
     if (report.mode === 'report') return 'Toplantı Analiz Raporu';
-    if (report.mode === 'detailed') return 'Detaylı Toplantı Özeti';
+    if (report.mode === 'detailed') return 'Detaylı Toplantı Değerlendirmesi';
     return 'Genel Toplantı Özeti';
   }
   if (report.mode === 'report') return 'Meeting Analysis Report';
-  if (report.mode === 'detailed') return 'Detailed Meeting Summary';
+  if (report.mode === 'detailed') return 'Detailed Meeting Assessment';
   return 'General Meeting Summary';
 }
 
@@ -214,9 +273,9 @@ function referencesTitle(report: MeetingReport): string {
 
 function reportMeta(report: MeetingReport): string {
   if (report.language === 'tr') {
-    return `Kaynak: ${report.sourceCount} · Segment: ${report.segmentCount.toLocaleString()} · Kelime: ${report.wordCount.toLocaleString()}`;
+    return `Oturum: ${report.sourceCount} · Transcript segmenti: ${report.segmentCount.toLocaleString()} · Kelime: ${report.wordCount.toLocaleString()}`;
   }
-  return `Sources: ${report.sourceCount} · Segments: ${report.segmentCount.toLocaleString()} · Words: ${report.wordCount.toLocaleString()}`;
+  return `Sessions: ${report.sourceCount} · Transcript segments: ${report.segmentCount.toLocaleString()} · Words: ${report.wordCount.toLocaleString()}`;
 }
 
 function referenceSuffix(referenceIds: number[]): string {
@@ -290,8 +349,7 @@ export async function downloadTranscriptLowMemory(
     }
     if (index > 0 && index % 350 === 0) await yieldToBrowser();
   }
-  if (format === 'md') parts.push('\n');
-  else parts.push('\n');
+  parts.push('\n');
 
   downloadBlob(new Blob(parts, { type: format === 'md' ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8' }), filename);
 }

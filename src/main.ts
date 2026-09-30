@@ -35,6 +35,7 @@ let summaryLanguage: SummaryLanguage = 'original';
 let summaryBusy = false;
 let summaryError: string | null = null;
 let summaryProgress: string | null = null;
+let includeReportReferencesInExport = false;
 let exportCleanupEnabled = false;
 let exportReadableEnabled = true;
 let answerResult: AnswerResult | null = null;
@@ -472,7 +473,7 @@ function renderSummary(project: Project): string {
       <div class="flex flex-col gap-4 border-b border-slate-800 pb-5 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <div class="text-lg font-semibold text-white">Transcript Summary</div>
-          <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Generate a narrative meeting summary from the selected transcripts. Source filenames stay out of the main narrative and remain available only as traceable references.</p>
+          <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Generate a professional meeting assessment from the selected transcripts. The report extracts requirements, current-state details, implementation options, decisions, risks and open items instead of replaying the conversation.</p>
           <div class="mt-2 text-[11px] text-cyan-300/70">Scope: ${scopeLabel}${meetingReport ? ` · ${meetingReport.segmentCount.toLocaleString()} segments` : ''}</div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
@@ -483,6 +484,10 @@ function renderSummary(project: Project): string {
           <button data-action="export-summary" data-format="word" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>Word</button>
           <button data-action="export-summary" data-format="pdf" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>PDF</button>
         </div>
+        <label class="flex items-center gap-2 text-[10px] text-slate-600">
+          <input data-report-export-references type="checkbox" ${includeReportReferencesInExport ? 'checked' : ''} class="h-3.5 w-3.5 accent-cyan-400" />
+          Include source references in exported report
+        </label>
       </div>
 
       <div class="mt-5 grid gap-3 lg:grid-cols-[1fr_1fr]">
@@ -512,7 +517,7 @@ function renderSummary(project: Project): string {
 
       ${meetingReport ? renderMeetingReport(meetingReport) : summaryBusy
         ? `<div class="mt-6 rounded-2xl border border-slate-800 bg-slate-950/35 p-8 text-center text-sm text-slate-500">Building ${escapeHtml(summaryModeLabel(summaryMode))}…</div>`
-        : `<div class="mt-6 rounded-2xl border border-slate-800 bg-slate-950/35 p-8 text-center"><div class="text-sm font-semibold text-slate-300">Generate the summary</div><p class="mx-auto mt-2 max-w-2xl text-xs leading-6 text-slate-600">Choose a mode and output language, then click Generate. General targets an executive one-page summary, Detailed expands to roughly three pages, and Full Report uses the available material for a longer 5–6 page analysis.</p></div>`}
+        : `<div class="mt-6 rounded-2xl border border-slate-800 bg-slate-950/35 p-8 text-center"><div class="text-sm font-semibold text-slate-300">Generate the summary</div><p class="mx-auto mt-2 max-w-2xl text-xs leading-6 text-slate-600">Choose a mode and output language, then click Generate. General gives a concise executive view; Detailed organizes the main topics into requirement, assessment, implementation-option and open-point sections; Full Report expands the same findings into a broader discovery-style report.</p></div>`}
     </div>
   `;
 }
@@ -546,6 +551,12 @@ function renderMeetingReport(report: MeetingReport): string {
           <div class="text-sm font-semibold ${section.kind === 'follow-up' ? 'text-amber-200' : 'text-slate-100'}">${escapeHtml(section.title)}</div>
           ${section.paragraphs.length ? `<div class="mt-4 space-y-4">${section.paragraphs.map((paragraph) => `<p class="text-[15px] leading-8 text-slate-300">${escapeHtml(paragraph.text)}${renderReferenceMarkers(paragraph.referenceIds)}</p>`).join('')}</div>` : ''}
           ${section.bullets.length ? `<ul class="mt-4 space-y-2.5">${section.bullets.map((bullet) => `<li class="flex gap-3 text-sm leading-6 text-slate-300"><span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-600"></span><span>${escapeHtml(bullet.text)}${renderReferenceMarkers(bullet.referenceIds)}</span></li>`).join('')}</ul>` : ''}
+          ${(section.subsections ?? []).length ? `<div class="mt-5 space-y-5 border-t border-white/[0.06] pt-5">${(section.subsections ?? []).map((subsection) => `
+            <div>
+              <div class="text-[11px] font-semibold uppercase tracking-[0.08em] ${subsection.kind === 'open-item' ? 'text-amber-300/80' : subsection.kind === 'decision' ? 'text-emerald-300/80' : 'text-slate-500'}">${escapeHtml(subsection.title)}</div>
+              ${subsection.paragraphs.length ? `<div class="mt-2 space-y-3">${subsection.paragraphs.map((paragraph) => `<p class="text-sm leading-7 text-slate-400">${escapeHtml(paragraph.text)}${renderReferenceMarkers(paragraph.referenceIds)}</p>`).join('')}</div>` : ''}
+              ${subsection.bullets.length ? `<ul class="mt-2 space-y-2">${subsection.bullets.map((bullet) => `<li class="flex gap-3 text-sm leading-6 text-slate-300"><span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-700"></span><span>${escapeHtml(bullet.text)}${renderReferenceMarkers(bullet.referenceIds)}</span></li>`).join('')}</ul>` : ''}
+            </div>`).join('')}</div>` : ''}
         </section>
       `).join('')}
 
@@ -746,6 +757,12 @@ app.addEventListener('change', (event) => {
     if (target.checked) mergeSelection.add(id);
     else mergeSelection.delete(id);
     invalidateSummaryCache();
+    render();
+    return;
+  }
+
+  if (target.matches('[data-report-export-references]') && target instanceof HTMLInputElement) {
+    includeReportReferencesInExport = target.checked;
     render();
     return;
   }
@@ -1120,25 +1137,25 @@ async function exportSummary(format: string): Promise<void> {
 
   try {
     if (format === 'txt') {
-      downloadTextContent(reportToText(meetingReport), `${stem}.txt`);
+      downloadTextContent(reportToText(meetingReport, { includeReferences: includeReportReferencesInExport }), `${stem}.txt`);
       return;
     }
     if (format === 'md') {
-      downloadTextContent(reportToMarkdown(meetingReport), `${stem}.md`, true);
+      downloadTextContent(reportToMarkdown(meetingReport, { includeReferences: includeReportReferencesInExport }), `${stem}.md`, true);
       return;
     }
     if (format === 'html') {
-      downloadHtmlContent(reportToHtml(meetingReport), `${stem}.html`);
+      downloadHtmlContent(reportToHtml(meetingReport, false, { includeReferences: includeReportReferencesInExport }), `${stem}.html`);
       return;
     }
     if (format === 'word') {
-      downloadWordReport(meetingReport, `${stem}.doc`);
+      downloadWordReport(meetingReport, `${stem}.doc`, { includeReferences: includeReportReferencesInExport });
       return;
     }
     if (format === 'pdf') {
       operationStatus = 'Preparing PDF…';
       updateOperationStatus();
-      await downloadPdfReport(meetingReport, `${stem}.pdf`);
+      await downloadPdfReport(meetingReport, `${stem}.pdf`, { includeReferences: includeReportReferencesInExport });
       operationStatus = null;
       render();
     }
