@@ -120,6 +120,19 @@ export type AttributionConfidence = 'explicit' | 'inferred' | 'unknown';
 export type RequirementStatus = 'Confirmed' | 'Proposed' | 'Open' | 'Discussed' | 'Identified';
 export type ExportProfile = 'external' | 'internal';
 
+export type AIProvider = 'openai';
+export type AIModelPreset = 'gpt-5.6-luna' | 'gpt-5.6-terra' | 'gpt-5.6-sol';
+
+export interface AIEnhancementMeta {
+  provider: AIProvider;
+  model: string;
+  enhancedAt: string;
+  itemsProcessed: number;
+  itemsAccepted: number;
+  itemsRejected: number;
+  rawTranscriptShared: boolean;
+}
+
 export interface ReportAttributionInfo {
   party: ReportAttribution;
   confidence: AttributionConfidence;
@@ -248,6 +261,7 @@ export interface MeetingReport {
   references: ReportReference[];
   wordCount: number;
   validation: ReportValidationSummary;
+  ai?: AIEnhancementMeta;
 }
 
 export interface AnswerResult {

@@ -2,10 +2,12 @@ import './styles.css';
 import { downloadHtmlContent, downloadJson, downloadMarkdown, downloadMergedDocuments, downloadPdfReport, downloadTextContent, downloadTranscriptLowMemory, downloadTxt, downloadWordReport, formatSourceMoment, reportToHtml, reportToMarkdown, reportToText } from './export';
 import { answerQuestion } from './intelligence';
 import { generateMeetingReport } from './report';
+import { AI_MODEL_OPTIONS, enhanceMeetingReportWithAI, testOpenAIKey } from './ai';
 import { translateMeetingReport, TranslationUnavailableError } from './translation';
 import { formatClock, makeId, mergeTranscriptsAsync, parseTranscript } from './parser';
 import { loadWorkspace, saveWorkspace } from './storage';
 import type {
+  AIModelPreset,
   AnswerResult,
   AppTab,
   ConfidenceFilter,
@@ -38,6 +40,12 @@ let summaryError: string | null = null;
 let summaryProgress: string | null = null;
 let includeReportReferencesInExport = false;
 let reportExportProfile: ExportProfile = 'external';
+let aiEnabled = false;
+let aiApiKey = '';
+let aiApiKeyVisible = false;
+let aiModel: AIModelPreset = 'gpt-5.6-terra';
+let aiConnectionStatus: 'idle' | 'testing' | 'ok' | 'error' = 'idle';
+let aiConnectionMessage = '';
 let exportCleanupEnabled = false;
 let exportReadableEnabled = true;
 let answerResult: AnswerResult | null = null;
@@ -453,7 +461,7 @@ function renderSummary(project: Project): string {
   const selectedIds = selectedDocumentIdsForSummary(project);
   const resolvedIds = resolvedSummaryDocumentIds(project, selectedIds);
 
-  if (!meetingReport && !summaryBusy && summaryLanguage === 'original') {
+  if (!meetingReport && !summaryBusy && !aiEnabled && summaryLanguage === 'original') {
     meetingReport = generateMeetingReport(project, summaryMode, selectedIds);
   }
   if (meetingReport && !reportMatchesScope(meetingReport, summaryMode, summaryLanguage, resolvedIds)) {
@@ -479,7 +487,7 @@ function renderSummary(project: Project): string {
           <div class="mt-2 text-[11px] text-cyan-300/70">Scope: ${scopeLabel}${meetingReport ? ` · ${meetingReport.segmentCount.toLocaleString()} segments` : ''}</div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
-          <button data-action="regenerate-summary" class="quiet-button" ${summaryBusy ? 'disabled' : ''}>${summaryBusy ? 'Generating…' : 'Generate'}</button>
+          <button data-action="regenerate-summary" class="quiet-button" ${summaryBusy ? 'disabled' : ''}>${summaryBusy ? 'Generating…' : aiEnabled ? 'Generate with AI' : 'Generate'}</button>
           <button data-action="export-summary" data-format="txt" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>TXT</button>
           <button data-action="export-summary" data-format="md" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>MD</button>
           <button data-action="export-summary" data-format="html" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>HTML</button>
@@ -516,6 +524,43 @@ function renderSummary(project: Project): string {
           <div class="mt-2 text-[10px] leading-4 text-slate-600">English/Türkçe uses the browser's on-device Translator API when available. Technical product terms are protected from literal word-by-word translation.</div>
         </section>
       </div>
+
+      <section class="mt-3 rounded-xl border ${aiEnabled ? 'border-violet-800/50 bg-violet-950/[0.08]' : 'border-slate-800 bg-slate-950/35'} p-4">
+        <div class="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+          <div class="max-w-3xl">
+            <div class="flex items-center gap-2">
+              <div class="text-xs font-semibold text-slate-200">AI Enhanced</div>
+              <span class="rounded-full border px-2 py-0.5 text-[9px] ${aiEnabled ? 'border-violet-700/50 bg-violet-950/40 text-violet-200' : 'border-slate-800 text-slate-600'}">${aiEnabled ? 'ON' : 'OFF'}</span>
+            </div>
+            <p class="mt-1 text-[10px] leading-5 text-slate-600">Optional BYOK refinement. The local evidence engine builds the report first; AI may only refine wording and translate the structured report. Raw transcript text is not sent in this mode.</p>
+          </div>
+          <div class="flex gap-1 rounded-lg border border-slate-800 bg-slate-950 p-1 text-[10px]">
+            <button data-action="set-ai-mode" data-ai-enabled="false" class="rounded-md px-3 py-1.5 ${!aiEnabled ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}">Off</button>
+            <button data-action="set-ai-mode" data-ai-enabled="true" class="rounded-md px-3 py-1.5 ${aiEnabled ? 'bg-violet-700/70 text-white' : 'text-slate-500 hover:text-slate-300'}">AI Enhanced</button>
+          </div>
+        </div>
+        ${aiEnabled ? `
+          <div class="mt-4 grid gap-3 xl:grid-cols-[220px_minmax(0,1fr)]">
+            <label class="block">
+              <span class="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">Model</span>
+              <select id="ai-model" class="control mt-2 w-full">
+                ${AI_MODEL_OPTIONS.map((option) => `<option value="${option.id}" ${option.id === aiModel ? 'selected' : ''}>${escapeHtml(option.label)} — ${escapeHtml(option.description)}</option>`).join('')}
+              </select>
+            </label>
+            <div>
+              <div class="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">Your OpenAI API key</div>
+              <div class="mt-2 flex gap-2">
+                <input id="ai-api-key" type="${aiApiKeyVisible ? 'text' : 'password'}" value="${escapeHtml(aiApiKey)}" autocomplete="off" spellcheck="false" placeholder="sk-…" class="control min-w-0 flex-1 font-mono" />
+                <button data-action="toggle-ai-key-visibility" class="quiet-button">${aiApiKeyVisible ? 'Hide' : 'Show'}</button>
+                <button data-action="test-ai-key" class="quiet-button" ${!aiApiKey || aiConnectionStatus === 'testing' ? 'disabled' : ''}>${aiConnectionStatus === 'testing' ? 'Testing…' : 'Test'}</button>
+                <button data-action="forget-ai-key" class="quiet-button" ${!aiApiKey ? 'disabled' : ''}>Forget</button>
+              </div>
+              <div class="mt-2 text-[10px] leading-4 ${aiConnectionStatus === 'ok' ? 'text-emerald-400/80' : aiConnectionStatus === 'error' ? 'text-amber-300/80' : 'text-slate-600'}">${aiConnectionMessage ? escapeHtml(aiConnectionMessage) : 'The key is kept in memory only for this page session. It is not saved to the workspace, IndexedDB, exports, or repository.'}</div>
+            </div>
+          </div>
+          <div class="mt-3 rounded-lg border border-amber-900/25 bg-amber-950/[0.06] px-3 py-2 text-[10px] leading-5 text-amber-200/65"><strong>Cost & security guard:</strong> AI is called only when you explicitly press Test or Generate with AI; changing mode or language never triggers a paid request. Browser BYOK is intended as an advanced prototype mode. For production/enterprise use, move the secret to the desktop app OS keychain or a backend proxy.</div>
+        ` : ''}
+      </section>
 
       ${summaryProgress ? `<div data-summary-progress class="mt-4 rounded-xl border border-cyan-900/25 bg-cyan-950/10 px-4 py-3 text-xs text-cyan-200/80">${escapeHtml(summaryProgress)}</div>` : ''}
       ${summaryError ? `<div class="mt-4 rounded-xl border border-amber-900/30 bg-amber-950/10 px-4 py-3 text-xs leading-5 text-amber-200/80">${escapeHtml(summaryError)}</div>` : ''}
@@ -554,7 +599,7 @@ function renderMeetingReport(report: MeetingReport): string {
         ${metricCard('Conflicts', String(report.conflicts.length))}
       </div>
 
-      <div class="rounded-xl border border-emerald-900/25 bg-emerald-950/[0.08] px-4 py-3 text-[11px] leading-5 text-emerald-200/75">Enterprise evidence mode is enabled. Recommendations remain distinct from decisions, decisions require explicit agreement language, customer/Kong attribution is only treated as explicit when the transcript names the party, and ambiguous or unsupported claims are excluded from the customer-facing report.</div>
+      <div class="rounded-xl border border-emerald-900/25 bg-emerald-950/[0.08] px-4 py-3 text-[11px] leading-5 text-emerald-200/75">Enterprise evidence mode is enabled. Recommendations remain distinct from decisions, decisions require explicit agreement language, customer/Kong attribution is only treated as explicit when the transcript names the party, and ambiguous or unsupported claims are excluded from the customer-facing report.${report.ai ? ` <strong>AI Enhanced:</strong> ${escapeHtml(report.ai.model)} refined ${report.ai.itemsAccepted}/${report.ai.itemsProcessed} report items; raw transcript sharing: ${report.ai.rawTranscriptShared ? 'yes' : 'no'}.` : ''}</div>
 
       ${(report.conflicts.length || report.reviewQueue.length || report.coverage.uncoveredTopics.length) ? `
         <details class="rounded-xl border border-amber-900/25 bg-amber-950/[0.05] p-4">
@@ -739,19 +784,38 @@ app.addEventListener('click', (event) => {
     render();
   }
   if (action === 'regenerate-summary') void regenerateMeetingReport();
+  if (action === 'set-ai-mode') {
+    aiEnabled = actionElement.dataset.aiEnabled === 'true';
+    aiConnectionStatus = 'idle';
+    aiConnectionMessage = '';
+    invalidateSummaryCache();
+    render();
+  }
+  if (action === 'toggle-ai-key-visibility') {
+    aiApiKeyVisible = !aiApiKeyVisible;
+    render();
+  }
+  if (action === 'forget-ai-key') {
+    aiApiKey = '';
+    aiConnectionStatus = 'idle';
+    aiConnectionMessage = 'API key cleared from memory.';
+    invalidateSummaryCache();
+    render();
+  }
+  if (action === 'test-ai-key') void testConfiguredAIKey();
   if (action === 'set-summary-mode') {
     const requested = actionElement.dataset.summaryMode;
     summaryMode = requested === 'report' ? 'report' : requested === 'detailed' ? 'detailed' : 'general';
     invalidateSummaryCache();
     render();
-    void regenerateMeetingReport();
+    if (!aiEnabled) void regenerateMeetingReport();
   }
   if (action === 'set-summary-language') {
     const requested = actionElement.dataset.summaryLanguage;
     summaryLanguage = requested === 'tr' ? 'tr' : requested === 'en' ? 'en' : 'original';
     invalidateSummaryCache();
     render();
-    void regenerateMeetingReport();
+    if (!aiEnabled) void regenerateMeetingReport();
   }
   if (action === 'set-report-export-profile') {
     reportExportProfile = actionElement.dataset.exportProfile === 'internal' ? 'internal' : 'external';
@@ -805,6 +869,15 @@ app.addEventListener('change', (event) => {
     return;
   }
 
+  if (target.id === 'ai-model') {
+    aiModel = target.value as AIModelPreset;
+    aiConnectionStatus = 'idle';
+    aiConnectionMessage = '';
+    invalidateSummaryCache();
+    render();
+    return;
+  }
+
   if (target.id === 'confidence-filter') {
     confidenceFilter = target.value as ConfidenceFilter;
     segmentPage = 0;
@@ -814,6 +887,17 @@ app.addEventListener('change', (event) => {
 
 app.addEventListener('input', (event) => {
   const target = event.target as HTMLInputElement | HTMLTextAreaElement;
+
+  if (target.id === 'ai-api-key' && target instanceof HTMLInputElement) {
+    aiApiKey = target.value;
+    aiConnectionStatus = 'idle';
+    aiConnectionMessage = '';
+    const testButton = document.querySelector<HTMLButtonElement>('[data-action="test-ai-key"]');
+    const forgetButton = document.querySelector<HTMLButtonElement>('[data-action="forget-ai-key"]');
+    if (testButton) testButton.disabled = !aiApiKey.trim();
+    if (forgetButton) forgetButton.disabled = !aiApiKey.trim();
+    return;
+  }
 
   if (target.id === 'transcript-search' && target instanceof HTMLInputElement) {
     transcriptQuery = target.value;
@@ -1120,6 +1204,40 @@ async function regenerateMeetingReport(): Promise<void> {
 
   try {
     const base = generateMeetingReport(project, summaryMode, selectedIds);
+
+    if (aiEnabled) {
+      if (!aiApiKey.trim()) {
+        if (summaryLanguage === 'original') {
+          meetingReport = base;
+        } else {
+          try {
+            meetingReport = await translateMeetingReport(base, summaryLanguage);
+          } catch {
+            meetingReport = base;
+            summaryLanguage = 'original';
+          }
+        }
+        summaryError = 'AI Enhanced is enabled, but no API key is configured. A local fallback report was generated instead. Paste your own key or turn AI off.';
+        summaryProgress = null;
+        return;
+      }
+
+      summaryProgress = 'AI is refining the evidence-backed report draft…';
+      render();
+      meetingReport = await enhanceMeetingReportWithAI(
+        base,
+        aiApiKey,
+        { provider: 'openai', model: aiModel },
+        summaryLanguage,
+        ({ completed, total }) => {
+          summaryProgress = `AI refinement ${completed}/${total}…`;
+          updateSummaryProgressOnly();
+        },
+      );
+      summaryProgress = null;
+      return;
+    }
+
     if (summaryLanguage === 'original') {
       meetingReport = base;
       summaryProgress = null;
@@ -1134,19 +1252,49 @@ async function regenerateMeetingReport(): Promise<void> {
     });
     summaryProgress = null;
   } catch (error) {
-    if (error instanceof TranslationUnavailableError) {
+    const message = error instanceof Error ? error.message : 'Summary generation failed.';
+    if (aiEnabled) {
+      const fallback = generateMeetingReport(project, summaryMode, selectedIds);
+      if (summaryLanguage === 'original') {
+        meetingReport = fallback;
+      } else {
+        try {
+          meetingReport = await translateMeetingReport(fallback, summaryLanguage);
+        } catch {
+          meetingReport = fallback;
+          summaryLanguage = 'original';
+        }
+      }
+      summaryError = `AI enhancement failed: ${message} A local fallback report was kept instead; no automatic AI retry was made.`;
+    } else if (error instanceof TranslationUnavailableError) {
       const fallback = generateMeetingReport(project, summaryMode, selectedIds);
       meetingReport = fallback;
       summaryError = `${error.message} The report was generated in Original mode instead. Use a Chromium browser with the on-device Translator API enabled to normalize mixed Turkish/English content without sending transcript text to an external service.`;
       summaryLanguage = 'original';
     } else {
-      summaryError = error instanceof Error ? error.message : 'Summary generation failed.';
+      summaryError = message;
     }
     summaryProgress = null;
   } finally {
     summaryBusy = false;
     render();
   }
+}
+
+async function testConfiguredAIKey(): Promise<void> {
+  if (!aiApiKey.trim() || aiConnectionStatus === 'testing') return;
+  aiConnectionStatus = 'testing';
+  aiConnectionMessage = 'Testing the key with a minimal API request…';
+  render();
+  try {
+    await testOpenAIKey(aiApiKey, aiModel);
+    aiConnectionStatus = 'ok';
+    aiConnectionMessage = `Connection successful with ${aiModel}.`;
+  } catch (error) {
+    aiConnectionStatus = 'error';
+    aiConnectionMessage = error instanceof Error ? error.message : 'Connection test failed.';
+  }
+  render();
 }
 
 function updateSummaryProgressOnly() {

@@ -183,3 +183,49 @@ PDF export no longer downloads `pdfmake` or fonts from a CDN. It opens a print-r
 ### Current trust model
 
 The report engine is intentionally conservative. It is still a local heuristic/extractive system rather than a semantic LLM reviewer. Enterprise Report v2 prioritizes traceability and avoiding overstatement over forcing every transcript sentence into the final report. Customer-facing deliverables should still receive a human review before being treated as final contractual or architectural documentation.
+
+## AI Enhanced reports (BYOK prototype)
+
+AI enhancement is optional and **off by default**. The local evidence engine always builds the evidence-backed report first. When AI Enhanced is enabled, the selected model is used only to refine the wording and optionally normalize the report to English or Turkish.
+
+### Cost controls
+
+- No API key is bundled with the application.
+- Every user must provide their own API key.
+- AI never runs automatically when the report mode or output language changes.
+- A paid AI request is made only when the user explicitly clicks **Test** or **Generate with AI**.
+- If AI fails, the application keeps the local evidence-backed report and does not automatically retry the paid request.
+
+### Data scope
+
+The current AI Enhanced mode sends the **structured report draft only**. Raw transcript segments are not sent to the AI provider by this mode.
+
+The AI layer is deliberately constrained:
+
+1. Local deterministic evidence extraction runs first.
+2. Unsupported/ambiguous findings remain filtered by the local evidence gate.
+3. AI receives report text with stable item IDs.
+4. AI is instructed to improve language only, without adding facts or strengthening certainty.
+5. Returned text is checked conservatively for new numbers and stronger decision/confirmation language before it is accepted.
+6. Internal references, claim validation, coverage and evidence mappings remain local and unchanged.
+
+### API key handling
+
+Browser BYOK is an **advanced prototype mode**, not the intended final enterprise secret-management design.
+
+- The key is kept only in the running page's memory.
+- It is not written to WorkspaceState, IndexedDB, exports, or the repository.
+- Refreshing or closing the page clears it.
+- The UI provides explicit **Show / Hide**, **Test**, and **Forget** actions.
+
+For production and enterprise deployments, move provider credentials out of the browser entirely. The planned desktop application should store secrets in the operating-system keychain and perform provider calls from the Tauri/Rust backend. A hosted deployment should use a backend proxy / secret store instead of exposing API keys to client-side JavaScript.
+
+### Models
+
+The initial OpenAI presets are:
+
+- `gpt-5.6-luna` — economy / high-volume
+- `gpt-5.6-terra` — balanced quality and cost (default)
+- `gpt-5.6-sol` — highest quality
+
+The provider layer is intentionally isolated in `src/ai.ts` so local models, a desktop provider, Azure-hosted models, or other enterprise providers can be added later without coupling report logic to a single vendor.
