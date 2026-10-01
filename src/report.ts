@@ -962,16 +962,6 @@ function buildCrossCuttingParagraph(items: EvidenceItem[], kind: FindingKind): D
   };
 }
 
-function buildNextStepsParagraph(items: EvidenceItem[]): DraftParagraph {
-  const selected = uniqueEvidence(items, 6);
-  return {
-    text: 'The next steps are the unresolved follow-up items captured below, including the remaining confirmations, implementation details and roadmap dependencies explicitly raised during the selected sessions.',
-    references: uniqueHits(selected.flatMap(referencesFromEvidence)),
-    validation: aggregateValidation(selected, 'open-item'),
-  };
-}
-
-
 function excludeEvidence(items: EvidenceItem[], excluded: EvidenceItem[]): EvidenceItem[] {
   const keys = new Set(excluded.map(evidenceKey));
   return items.filter((item) => !keys.has(evidenceKey(item)));
