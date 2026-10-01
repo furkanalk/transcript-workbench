@@ -2,7 +2,7 @@ import './styles.css';
 import { downloadHtmlContent, downloadJson, downloadMarkdown, downloadMergedDocuments, downloadPdfReport, downloadTextContent, downloadTranscriptLowMemory, downloadTxt, downloadWordReport, formatSourceMoment, reportToHtml, reportToMarkdown, reportToText } from './export';
 import { answerQuestion } from './intelligence';
 import { generateMeetingReport } from './report';
-import { AI_MODEL_OPTIONS, enhanceMeetingReportWithAI, testOpenAIKey } from './ai';
+import { AI_MODEL_OPTIONS, answerQuestionWithAI, enhanceMeetingReportWithAI, testOpenAIKey } from './ai';
 import { parseMeetingNoteMarkdown } from './meeting-notes';
 import { translateMeetingReport, TranslationUnavailableError } from './translation';
 import { formatClock, makeId, mergeTranscriptsAsync, parseTranscript } from './parser';
@@ -52,6 +52,11 @@ let exportCleanupEnabled = false;
 let exportReadableEnabled = true;
 let answerResult: AnswerResult | null = null;
 let askQuery = '';
+let askAiEnabled = false;
+let askBusy = false;
+let askError: string | null = null;
+let answerWasAI = false;
+let askRequestId = 0;
 let saveTimer: number | null = null;
 const SAVE_DEBOUNCE_MS = 1200;
 const MAX_IN_MEMORY_MERGE_SEGMENTS = 35000;
@@ -728,19 +733,65 @@ function renderAsk(project: Project): string {
     <div class="mx-auto max-w-5xl">
       <div class="border-b border-slate-800 pb-5">
         <div class="text-lg font-semibold text-white">Ask the transcripts</div>
-        <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Searches ${sourceCount} source transcript${sourceCount === 1 ? '' : 's'} locally and answers only from matching transcript evidence. References link back to the exact source segment.</p>
+        <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Ask grounded questions across ${sourceCount} source transcript${sourceCount === 1 ? '' : 's'}. Local mode uses the built-in relevance engine; AI Enhanced first retrieves local evidence and then lets your selected AI model synthesize an answer only from those retrieved snippets.</p>
       </div>
 
-      <form id="ask-form" class="mt-5 rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
+      <section class="mt-5 rounded-xl border ${askAiEnabled ? 'border-violet-800/50 bg-violet-950/[0.08]' : 'border-slate-800 bg-slate-950/35'} p-4">
+        <div class="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+          <div class="max-w-3xl">
+            <div class="flex items-center gap-2">
+              <div class="text-xs font-semibold text-slate-200">Ask Engine</div>
+              <span class="rounded-full border px-2 py-0.5 text-[9px] ${askAiEnabled ? 'border-violet-700/50 bg-violet-950/40 text-violet-200' : 'border-slate-800 text-slate-600'}">${askAiEnabled ? 'AI ENHANCED' : 'LOCAL'}</span>
+            </div>
+            <p class="mt-1 text-[10px] leading-5 text-slate-600">${askAiEnabled
+              ? 'Local retrieval runs first. Only the small set of matching evidence snippets is sent to the AI provider; the full transcript collection is not sent.'
+              : 'Runs entirely in the browser with no external API call.'}</p>
+          </div>
+          <div class="flex gap-1 rounded-lg border border-slate-800 bg-slate-950 p-1 text-[10px]">
+            <button type="button" data-action="set-ask-ai-mode" data-ai-enabled="false" class="rounded-md px-3 py-1.5 ${!askAiEnabled ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}">Local</button>
+            <button type="button" data-action="set-ask-ai-mode" data-ai-enabled="true" class="rounded-md px-3 py-1.5 ${askAiEnabled ? 'bg-violet-700/70 text-white' : 'text-slate-500 hover:text-slate-300'}">AI Enhanced</button>
+          </div>
+        </div>
+
+        ${askAiEnabled ? `
+          <div class="mt-4 grid gap-3 xl:grid-cols-[220px_minmax(0,1fr)]">
+            <label class="block">
+              <span class="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">Model</span>
+              <select id="ai-model" class="control mt-2 w-full">
+                ${AI_MODEL_OPTIONS.map((option) => `<option value="${option.id}" ${option.id === aiModel ? 'selected' : ''}>${escapeHtml(option.label)} — ${escapeHtml(option.description)}</option>`).join('')}
+              </select>
+            </label>
+            <div>
+              <div class="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">Your OpenAI API key</div>
+              <div class="mt-2 flex gap-2">
+                <input id="ai-api-key" type="${aiApiKeyVisible ? 'text' : 'password'}" value="${escapeHtml(aiApiKey)}" autocomplete="off" spellcheck="false" placeholder="sk-…" class="control min-w-0 flex-1 font-mono" />
+                <button type="button" data-action="toggle-ai-key-visibility" class="quiet-button">${aiApiKeyVisible ? 'Hide' : 'Show'}</button>
+                <button type="button" data-action="test-ai-key" class="quiet-button" ${!aiApiKey || aiConnectionStatus === 'testing' ? 'disabled' : ''}>${aiConnectionStatus === 'testing' ? 'Testing…' : 'Test'}</button>
+                <button type="button" data-action="forget-ai-key" class="quiet-button" ${!aiApiKey ? 'disabled' : ''}>Forget</button>
+              </div>
+              <div class="mt-2 text-[10px] leading-4 ${aiConnectionStatus === 'ok' ? 'text-emerald-400/80' : aiConnectionStatus === 'error' ? 'text-amber-300/80' : 'text-slate-600'}">${aiConnectionMessage ? escapeHtml(aiConnectionMessage) : 'Uses the same in-memory BYOK key/model as AI Enhanced Reports. The key is never written to the workspace or repository.'}</div>
+            </div>
+          </div>
+          <div class="mt-3 rounded-lg border border-amber-900/25 bg-amber-950/[0.06] px-3 py-2 text-[10px] leading-5 text-amber-200/65"><strong>Cost guard:</strong> no paid request runs when you enable AI, change the model, type a question, or open this tab. The provider is called only when you press Ask or Test. If AI fails, the local grounded answer is kept as a fallback.</div>
+        ` : ''}
+      </section>
+
+      <form id="ask-form" class="mt-4 rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
         <label class="text-xs font-medium uppercase tracking-wider text-slate-500">Question</label>
         <div class="mt-2 flex flex-col gap-2 sm:flex-row">
-          <input id="ask-input" value="${escapeHtml(askQuery)}" type="text" autocomplete="off" placeholder="e.g. Does the developer portal support CIDR restriction?" class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-slate-500" />
-          <button class="rounded-lg bg-white px-5 py-3 text-sm font-semibold text-slate-950 hover:bg-slate-200">Ask</button>
+          <input id="ask-input" value="${escapeHtml(askQuery)}" type="text" autocomplete="off" placeholder="e.g. Does the developer portal support CIDR restriction?" class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-slate-500" ${askBusy ? 'disabled' : ''} />
+          <button ${askBusy ? 'disabled' : ''} class="rounded-lg bg-white px-5 py-3 text-sm font-semibold text-slate-950 hover:bg-slate-200 disabled:cursor-wait disabled:opacity-50">${askBusy ? 'Answering…' : askAiEnabled ? 'Ask with AI' : 'Ask'}</button>
         </div>
-        <div class="mt-2 text-[11px] text-slate-600">No external API is called. Typos and close technical terms are matched with a lightweight local relevance engine.</div>
+        <div class="mt-2 text-[11px] text-slate-600">${askAiEnabled
+          ? 'Grounding pipeline: local evidence retrieval → AI synthesis → source references. No web search or outside product knowledge is requested.'
+          : 'No external API is called. Typos and close technical terms are matched with a lightweight local relevance engine.'}</div>
       </form>
 
-      ${answerResult ? renderAnswer(answerResult) : `
+      ${askError ? `<div class="mt-4 rounded-xl border border-amber-900/30 bg-amber-950/10 px-4 py-3 text-xs leading-5 text-amber-200/80">${escapeHtml(askError)}</div>` : ''}
+
+      ${answerResult ? renderAnswer(answerResult, answerWasAI) : askBusy
+        ? `<div class="mt-6 rounded-2xl border border-slate-800 bg-slate-950/35 p-8 text-center text-sm text-slate-500">Retrieving evidence${askAiEnabled ? ' and building a grounded AI answer' : ''}…</div>`
+        : `
         <div class="mt-6 grid gap-3 sm:grid-cols-3">
           ${promptExample('Feature check', 'Is there CIDR/IP restriction support?')}
           ${promptExample('Capability', 'Can the portal create client credentials?')}
@@ -751,7 +802,7 @@ function renderAsk(project: Project): string {
   `;
 }
 
-function renderAnswer(result: AnswerResult): string {
+function renderAnswer(result: AnswerResult, aiGrounded = false): string {
   const confidenceLabel = {
     strong: 'Strong match',
     moderate: 'Moderate match',
@@ -762,7 +813,10 @@ function renderAnswer(result: AnswerResult): string {
   return `
     <section class="mt-5 rounded-2xl border border-slate-800 bg-slate-950/45 p-5">
       <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="text-xs font-medium uppercase tracking-wider text-slate-500">Answer</div>
+        <div class="flex items-center gap-2">
+          <div class="text-xs font-medium uppercase tracking-wider text-slate-500">Answer</div>
+          <span class="rounded-full border px-2 py-0.5 text-[9px] ${aiGrounded ? 'border-violet-800/60 bg-violet-950/30 text-violet-300' : 'border-slate-800 text-slate-600'}">${aiGrounded ? 'AI · GROUNDED' : 'LOCAL'}</span>
+        </div>
         <span class="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-400">${confidenceLabel}</span>
       </div>
       <p class="mt-3 text-[15px] leading-7 text-slate-100">${escapeHtml(result.answer)}</p>
@@ -856,6 +910,13 @@ app.addEventListener('click', (event) => {
     invalidateSummaryCache();
     render();
   }
+  if (action === 'set-ask-ai-mode') {
+    askAiEnabled = actionElement.dataset.aiEnabled === 'true';
+    askError = null;
+    answerResult = null;
+    answerWasAI = false;
+    render();
+  }
   if (action === 'toggle-ai-key-visibility') {
     aiApiKeyVisible = !aiApiKeyVisible;
     render();
@@ -864,6 +925,7 @@ app.addEventListener('click', (event) => {
     aiApiKey = '';
     aiConnectionStatus = 'idle';
     aiConnectionMessage = 'API key cleared from memory.';
+    askError = askAiEnabled ? 'AI key cleared. Ask will use the local fallback until you provide a key or turn AI off.' : null;
     invalidateSummaryCache();
     render();
   }
@@ -889,7 +951,7 @@ app.addEventListener('click', (event) => {
   }
   if (action === 'export-summary') void exportSummary(actionElement.dataset.format ?? 'md');
   if (action === 'jump-reference') jumpToReference(actionElement.dataset.documentId ?? '', actionElement.dataset.segmentId ?? '');
-  if (action === 'use-example') useExample(actionElement.dataset.question ?? '');
+  if (action === 'use-example') void useExample(actionElement.dataset.question ?? '');
   if (action === 'export-document') exportDocument(actionElement.dataset.format ?? 'json');
 });
 
@@ -903,6 +965,10 @@ app.addEventListener('change', (event) => {
     mergeSelection = new Set();
     invalidateSummaryCache();
     answerResult = null;
+    askError = null;
+    askBusy = false;
+    answerWasAI = false;
+    askRequestId += 1;
     selectedSegmentId = null;
     segmentPage = 0;
     scheduleSave();
@@ -1016,10 +1082,8 @@ app.addEventListener('submit', (event) => {
   event.preventDefault();
   const input = form.querySelector<HTMLInputElement>('#ask-input');
   askQuery = input?.value.trim() ?? '';
-  const project = getActiveProject();
-  if (!project || !askQuery) return;
-  answerResult = answerQuestion(project, askQuery);
-  render();
+  if (!askQuery) return;
+  void runAsk(askQuery);
 });
 
 app.addEventListener('dragover', (event) => {
@@ -1294,11 +1358,56 @@ function jumpToReference(documentId: string, segmentId: string) {
   });
 }
 
-function useExample(question: string) {
+async function useExample(question: string): Promise<void> {
   askQuery = question;
+  await runAsk(question);
+}
+
+async function runAsk(question: string): Promise<void> {
   const project = getActiveProject();
-  if (project) answerResult = answerQuestion(project, question);
+  if (!project || !question.trim() || askBusy) return;
+
+  const requestId = ++askRequestId;
+  const projectId = project.id;
+  const localFallback = answerQuestion(project, question);
+  askBusy = true;
+  askError = null;
+  answerResult = null;
+  answerWasAI = false;
   render();
+
+  try {
+    if (!askAiEnabled) {
+      answerResult = localFallback;
+      return;
+    }
+
+    if (!aiApiKey.trim()) {
+      answerResult = localFallback;
+      askError = 'AI Enhanced Ask is enabled, but no API key is configured. Showing the local grounded answer instead.';
+      return;
+    }
+
+    const enhanced = await answerQuestionWithAI(project, question, aiApiKey, {
+      provider: 'openai',
+      model: aiModel,
+      evidenceLimit: 8,
+    });
+
+    if (requestId !== askRequestId || getActiveProject()?.id !== projectId) return;
+    answerResult = enhanced;
+    answerWasAI = true;
+  } catch (error) {
+    if (requestId !== askRequestId || getActiveProject()?.id !== projectId) return;
+    answerResult = localFallback;
+    answerWasAI = false;
+    askError = `${error instanceof Error ? error.message : 'AI answer generation failed.'} Showing the local grounded answer instead.`;
+  } finally {
+    if (requestId === askRequestId && getActiveProject()?.id === projectId) {
+      askBusy = false;
+      render();
+    }
+  }
 }
 
 function removeMeetingNote(noteId: string) {

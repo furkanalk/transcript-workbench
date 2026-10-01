@@ -1,4 +1,5 @@
-import type { AIEnhancementMeta, AIModelPreset, MeetingReport, SummaryLanguage } from './types';
+import type { AIEnhancementMeta, AIModelPreset, AnswerResult, MeetingReport, Project, SearchHit, SummaryLanguage } from './types';
+import { searchProject } from './intelligence';
 
 export interface AIEnhancementSettings {
   provider: 'openai';
@@ -29,6 +30,142 @@ interface TextSlot {
 interface RewriteResult {
   id: string;
   text: string;
+}
+
+
+export interface AIAskSettings {
+  provider: 'openai';
+  model: AIModelPreset;
+  evidenceLimit?: number;
+}
+
+interface AIAskPayload {
+  answer?: unknown;
+  reference_ids?: unknown;
+  confidence?: unknown;
+}
+
+export async function answerQuestionWithAI(
+  project: Project,
+  question: string,
+  apiKey: string,
+  settings: AIAskSettings,
+): Promise<AnswerResult> {
+  if (!apiKey.trim()) throw new Error('AI Enhanced Ask is enabled, but no API key is configured.');
+
+  const evidenceLimit = Math.max(3, Math.min(10, settings.evidenceLimit ?? 8));
+  const references = searchProject(project, question, evidenceLimit);
+  if (!references.length) {
+    return {
+      answer: looksTurkish(question)
+        ? 'Seçili transcriptlerde bu soruyu güvenilir biçimde yanıtlayacak yeterli kanıt bulunamadı.'
+        : 'The selected transcripts do not contain enough evidence to answer this question reliably.',
+      confidence: 'not-found',
+      references: [],
+    };
+  }
+
+  const evidence = references.map((hit, index) => ({
+    id: `R${index + 1}`,
+    source: hit.documentName,
+    timestamp: hit.displayTime,
+    confidence: Math.round(hit.confidence * 100),
+    text: compactAskEvidence(hit.context || hit.text, 1400),
+  }));
+
+  const input = {
+    task: 'grounded_transcript_question_answering',
+    question,
+    rules: [
+      'Answer only from the supplied transcript evidence. Do not use outside knowledge, web knowledge, product documentation, or assumptions.',
+      'If the evidence is insufficient, contradictory, tentative, or only discusses a proposal, say so clearly.',
+      'Do not turn a recommendation, possibility, roadmap item, question, or proposed approach into a confirmed capability or decision.',
+      'Preserve product names, technical terminology, numbers, dates, qualifiers, and uncertainty exactly in meaning.',
+      'Do not invent owners, decisions, implementation details, benchmark conditions, timelines, or product support statements.',
+      'Answer in the same language as the user question unless the question explicitly requests another language.',
+      'Use only evidence IDs from the supplied evidence list.',
+      'Return JSON only: {"answer":"...","reference_ids":["R1"],"confidence":"strong|moderate|weak|not-found"}.',
+    ],
+    evidence,
+  };
+
+  const response = await fetch(OPENAI_RESPONSES_URL, {
+    method: 'POST',
+    headers: authHeaders(apiKey),
+    body: JSON.stringify({
+      model: settings.model,
+      input: JSON.stringify(input),
+      max_output_tokens: 1800,
+    }),
+  });
+  if (!response.ok) throw await apiError(response);
+
+  const payload = await response.json();
+  const parsed = parseJsonObject(readResponseText(payload)) as AIAskPayload;
+  const answer = typeof parsed.answer === 'string' ? parsed.answer.replace(/\s+/g, ' ').trim() : '';
+  if (!answer) throw new Error('The AI provider returned an empty grounded answer.');
+
+  const allowedIds = new Map(evidence.map((item, index) => [item.id, references[index]]));
+  const requestedIds = Array.isArray(parsed.reference_ids)
+    ? parsed.reference_ids.filter((value): value is string => typeof value === 'string')
+    : [];
+  const selectedReferences = requestedIds
+    .map((id) => allowedIds.get(id))
+    .filter((hit): hit is SearchHit => Boolean(hit));
+
+  const safeReferences = selectedReferences.length ? uniqueAskReferences(selectedReferences) : references.slice(0, 3);
+  const evidenceText = `${question}\n${safeReferences.map((hit) => hit.context || hit.text).join('\n')}`;
+  if (!numbersAreGrounded(answer, evidenceText)) {
+    throw new Error('The AI answer introduced a number that was not present in the retrieved evidence.');
+  }
+
+  const confidence = normalizeAskConfidence(parsed.confidence, safeReferences);
+  return {
+    answer,
+    confidence,
+    references: safeReferences,
+  };
+}
+
+function normalizeAskConfidence(value: unknown, references: SearchHit[]): AnswerResult['confidence'] {
+  if (value === 'not-found') return 'not-found';
+  if (value === 'weak') return 'weak';
+  if (value === 'moderate') return 'moderate';
+  if (value === 'strong') {
+    const top = references[0]?.score ?? 0;
+    const second = references[1]?.score ?? 0;
+    return top >= 4.2 || (top >= 2.5 && second >= 1.8) ? 'strong' : 'moderate';
+  }
+  const top = references[0]?.score ?? 0;
+  return top >= 4.2 ? 'strong' : top >= 1.35 ? 'moderate' : 'weak';
+}
+
+function compactAskEvidence(value: string, limit: number): string {
+  const text = value.replace(/\s+/g, ' ').trim();
+  if (text.length <= limit) return text;
+  const prefix = text.slice(0, limit);
+  const boundary = Math.max(prefix.lastIndexOf('. '), prefix.lastIndexOf('? '), prefix.lastIndexOf('! '));
+  return (boundary > limit * 0.55 ? prefix.slice(0, boundary + 1) : prefix).trim();
+}
+
+function uniqueAskReferences(references: SearchHit[]): SearchHit[] {
+  const seen = new Set<string>();
+  return references.filter((hit) => {
+    const key = `${hit.documentId}:${hit.segmentId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function numbersAreGrounded(answer: string, evidence: string): boolean {
+  const sourceNumbers = new Set(evidence.match(/\b\d+(?:[.,]\d+)?%?\b/g) ?? []);
+  const answerNumbers = answer.match(/\b\d+(?:[.,]\d+)?%?\b/g) ?? [];
+  return answerNumbers.every((value) => sourceNumbers.has(value));
+}
+
+function looksTurkish(value: string): boolean {
+  return /[çğıöşüÇĞİÖŞÜ]|\b(ve|bir|bu|için|mı|mi|mu|mü|nedir|nasıl|destek|var mı|ne dedi)\b/i.test(value);
 }
 
 export async function testOpenAIKey(apiKey: string, model: string): Promise<void> {
