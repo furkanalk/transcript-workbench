@@ -99,10 +99,10 @@ export function reportToText(report: MeetingReport, options: ReportExportOptions
   if (report.requirementMatrix.length) {
     lines.push('REQUIREMENT MATRIX');
     for (const row of report.requirementMatrix) {
-      lines.push(`- ${row.requirement}`);
-      if (row.currentState) lines.push(`  Current State: ${row.currentState}`);
-      if (row.position) lines.push(`  Assessment / Position: ${row.position}`);
+      lines.push(`- ${row.topicTitle}: ${row.requirement}`);
+      if (row.position) lines.push(`  Kong Position / Assessment: ${row.position}`);
       lines.push(`  Status: ${row.status}`);
+      if (row.owner && row.owner !== 'Unassigned') lines.push(`  Owner: ${row.owner}`);
       if (row.nextAction) lines.push(`  Next Action: ${row.nextAction}`);
     }
     lines.push('');
@@ -162,10 +162,11 @@ export function reportToMarkdown(report: MeetingReport, options: ReportExportOpt
   }
   if (report.requirementMatrix.length) {
     lines.push('## Requirement Matrix', '');
-    lines.push('| Requirement | Current State | Assessment / Position | Status | Next Action |');
+    lines.push('| Topic | Requirement | Kong Position / Assessment | Status | Owner / Next Action |');
     lines.push('|---|---|---|---|---|');
     for (const row of report.requirementMatrix) {
-      lines.push(`| ${escapeMarkdownCell(row.requirement)} | ${escapeMarkdownCell(row.currentState ?? '')} | ${escapeMarkdownCell(row.position ?? '')} | ${row.status} | ${escapeMarkdownCell(row.nextAction ?? '')} |`);
+      const ownerAction = [row.owner && row.owner !== 'Unassigned' ? row.owner : '', row.nextAction ?? ''].filter(Boolean).join(' — ');
+      lines.push(`| ${escapeMarkdownCell(row.topicTitle)} | ${escapeMarkdownCell(row.requirement)} | ${escapeMarkdownCell(row.position ?? '')} | ${row.status} | ${escapeMarkdownCell(ownerAction)} |`);
     }
     lines.push('');
   }
@@ -272,14 +273,17 @@ function reportSectionHtml(section: ReportSection, includeReferences: boolean): 
 
 
 function requirementMatrixHtml(report: MeetingReport): string {
-  const rows = report.requirementMatrix.map((row) => `<tr>
+  const rows = report.requirementMatrix.map((row) => {
+    const ownerAction = [row.owner && row.owner !== 'Unassigned' ? row.owner : '', row.nextAction ?? ''].filter(Boolean).join(' — ');
+    return `<tr>
+    <td>${escapeHtml(row.topicTitle)}</td>
     <td>${escapeHtml(row.requirement)}</td>
-    <td>${escapeHtml(row.currentState ?? '')}</td>
     <td>${escapeHtml(row.position ?? '')}</td>
     <td class="status">${escapeHtml(row.status)}</td>
-    <td>${escapeHtml(row.nextAction ?? '')}</td>
-  </tr>`).join('');
-  return `<section class="report-section"><h2>Requirement Matrix</h2><table><thead><tr><th>Requirement</th><th>Current State</th><th>Assessment / Position</th><th>Status</th><th>Next Action</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+    <td>${escapeHtml(ownerAction)}</td>
+  </tr>`;
+  }).join('');
+  return `<section class="report-section"><h2>Requirement Matrix</h2><table><thead><tr><th>Topic</th><th>Requirement</th><th>Kong Position / Assessment</th><th>Status</th><th>Owner / Next Action</th></tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
 function openItemsHtml(report: MeetingReport): string {

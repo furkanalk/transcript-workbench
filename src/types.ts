@@ -36,6 +36,9 @@ export interface MeetingNoteBlock {
   order: number;
   headingPath: string[];
   text: string;
+  /** Nested list items that belong to this parent note/action. */
+  details?: string[];
+  listDepth?: number;
   lineStart: number;
   lineEnd: number;
 }
@@ -139,7 +142,7 @@ export interface NarrativeSummaryResult {
 export type SummaryMode = 'general' | 'detailed' | 'report';
 export type SummaryLanguage = 'original' | 'en' | 'tr';
 export type ReportSectionKind = 'overview' | 'discussion' | 'technical' | 'decision' | 'risk' | 'follow-up' | 'takeaway';
-export type ReportSubsectionKind = 'requirement' | 'current-state' | 'assessment' | 'options' | 'recommendation' | 'decision' | 'risk' | 'open-item' | 'evidence';
+export type ReportSubsectionKind = 'requirement' | 'current-state' | 'assessment' | 'capability' | 'options' | 'recommendation' | 'decision' | 'risk' | 'open-item' | 'evidence';
 export type ClaimValidationStatus = 'confirmed' | 'supported' | 'ambiguous' | 'conflicting' | 'unsupported';
 export type ReportAttribution = 'customer' | 'kong' | 'joint' | 'unknown';
 export type AttributionConfidence = 'explicit' | 'inferred' | 'unknown';
@@ -184,10 +187,13 @@ export interface ReportCoverage {
 
 export interface RequirementMatrixRow {
   topicId: string;
+  topicTitle: string;
   requirement: string;
+  /** Kept for internal compatibility; customer-facing matrices use Topic instead. */
   currentState?: string;
   position?: string;
   status: RequirementStatus;
+  owner?: 'Customer' | 'Kong' | 'Joint' | 'Unassigned';
   nextAction?: string;
   referenceIds: number[];
 }

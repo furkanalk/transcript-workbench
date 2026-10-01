@@ -246,3 +246,65 @@ The initial OpenAI presets are:
 - `gpt-5.6-sol` — highest quality
 
 The provider layer is intentionally isolated in `src/ai.ts` so local models, a desktop provider, Azure-hosted models, or other enterprise providers can be added later without coupling report logic to a single vendor.
+
+## Enterprise Report v3 — curated-source consolidation
+
+Enterprise Report v3 is focused on the quality issues exposed by real Full Report exports. The goal is to make customer-facing output read like a consultancy/discovery deliverable rather than an extractive transcript summary.
+
+### Curated meeting-note priority
+
+- Enabled Markdown meeting notes are treated as high-trust curated wording in Detailed and Full Report modes.
+- When curated note evidence exists for the same finding type, the report does not pad the subsection with lower-quality transcript wording.
+- Transcript evidence remains linked internally and is still used to fill genuine gaps that the notes do not cover.
+- Generic collection names such as `Transcript Collection` are replaced in the report subtitle with the meeting-note subject when it can be derived safely (for example `THY – Kong`).
+
+### Canonical findings and de-duplication
+
+- Semantically equivalent requirements/actions are consolidated into one canonical finding.
+- Consolidated findings keep all supporting evidence references.
+- Explicit Required Actions ownership is preserved while richer wording from a matching Open Item can be retained.
+- Finding roles are kept separate so a current-state observation is not accidentally merged with a migration action simply because both mention the same product.
+
+### Primary topic assignment
+
+Each finding is assigned to one primary customer-facing topic. This prevents the same licensing, migration, CI/CD or authentication statement from being repeated across several unrelated sections. Related evidence remains available internally through references.
+
+### Markdown parent/child actions
+
+Nested Markdown list items remain attached to their parent action. For example:
+
+```md
+1. Clarify licensing behavior for:
+   - Production vs. Pre-Production.
+   - Services across environments.
+   - Production-only counting.
+```
+
+is represented as one structured open item rather than four unrelated actions.
+
+### Confirmed Capabilities
+
+The report model now distinguishes confirmed/demonstrated product capability from decisions and recommendations. Examples include supported GitOps integration, native routing behavior, demonstrated authentication mechanisms and similar capability confirmations.
+
+### Customer-facing section quality
+
+- Weak one-off topics are suppressed from external report sections unless they contain a meaningful requirement, decision, open item, confirmed capability, curated note finding, or multiple strong independent findings.
+- Noisy transcript fragments stay in the internal Review Queue instead of leaking into external prose.
+- Common transcription variants around CI/CD, 3scale, decK and runbooks are normalized conservatively before report generation.
+- Full Report no longer repeats the same open items in a prose summary, topic sections, a Key Takeaways section and the final table. Executive Summary, topic findings and the consolidated matrices are the primary customer-facing surfaces.
+
+### Metric safety
+
+Throughput figures such as TPS/RPS are not silently presented as benchmark guarantees. If the selected evidence contains a performance number but no benchmark/test conditions, the report explicitly states that the benchmark conditions were not captured in the selected source material.
+
+### Cleaner Requirement Matrix
+
+The customer-facing matrix is reduced to:
+
+- Topic
+- Requirement
+- Kong Position / Assessment
+- Status
+- Owner / Next Action
+
+The DOCX generator places the Requirement Matrix on a dedicated landscape section with repeating table headers, then returns to portrait layout for the Outstanding Items section.

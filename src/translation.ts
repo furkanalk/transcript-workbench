@@ -61,6 +61,9 @@ const SECTION_TITLES_TR: Record<string, string> = {
 
 const SUBSECTION_TITLES_TR: Record<string, string> = {
   'Requirement & Current State': 'Gereksinim ve Mevcut Durum',
+  'Customer Requirement / Requirement': 'Müşteri Gereksinimi / Gereksinim',
+  'Current State': 'Mevcut Durum',
+  'Confirmed Capabilities': 'Doğrulanmış Yetenekler',
   'Assessment & Considerations': 'Değerlendirme ve Dikkate Alınması Gerekenler',
   'Implementation Options': 'Uygulama Seçenekleri',
   'Recommendations / Preferred Approach': 'Öneriler / Tercih Edilen Yaklaşım',
@@ -136,6 +139,7 @@ export async function translateMeetingReport(
     })),
     requirementMatrix: report.requirementMatrix.map((row) => ({
       ...row,
+      topicTitle: translated.get(row.topicTitle) ?? row.topicTitle,
       requirement: translated.get(row.requirement) ?? row.requirement,
       currentState: row.currentState ? (translated.get(row.currentState) ?? row.currentState) : undefined,
       position: row.position ? (translated.get(row.position) ?? row.position) : undefined,
@@ -170,6 +174,7 @@ function collectTranslatableStrings(report: MeetingReport): string[] {
     ...report.openItems.map((bullet) => bullet.text),
     ...report.structuredOpenItems.map((item) => item.text),
     ...report.requirementMatrix.flatMap((row) => [
+      row.topicTitle,
       row.requirement,
       row.currentState ?? '',
       row.position ?? '',

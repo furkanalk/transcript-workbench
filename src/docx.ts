@@ -52,8 +52,13 @@ function documentXml(report: MeetingReport, profile: ExportProfile): string {
   }
 
   if (report.requirementMatrix.length) {
+    // End the main portrait section. The next section is closed with landscape
+    // properties so the matrix gets a full-width page without rotating the rest
+    // of the report.
+    body.push(sectionBreak('portrait'));
     body.push(paragraph('Requirement Matrix', 'Heading1'));
     body.push(requirementTable(report));
+    body.push(sectionBreak('landscape'));
   }
 
   if (report.structuredOpenItems.length) {
@@ -117,18 +122,35 @@ function pageBreak(): string {
   return '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
 }
 
+function sectionBreak(orientation: 'portrait' | 'landscape'): string {
+  const landscape = orientation === 'landscape';
+  const size = landscape
+    ? '<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>'
+    : '<w:pgSz w:w="11906" w:h="16838"/>';
+  const margins = landscape
+    ? '<w:pgMar w:top="850" w:right="850" w:bottom="850" w:left="850" w:header="567" w:footer="567" w:gutter="0"/>'
+    : '<w:pgMar w:top="1134" w:right="1021" w:bottom="1134" w:left="1021" w:header="567" w:footer="567" w:gutter="0"/>';
+  return `<w:p><w:pPr><w:sectPr><w:type w:val="nextPage"/>${size}${margins}</w:sectPr></w:pPr></w:p>`;
+}
+
 function requirementTable(report: MeetingReport): string {
   const rows = [
-    tableRow(['Requirement', 'Current State', 'Assessment / Position', 'Status', 'Next Action'], true),
-    ...report.requirementMatrix.map((row) => tableRow([
-      row.requirement,
-      row.currentState ?? '',
-      row.position ?? '',
-      row.status,
-      row.nextAction ?? '',
-    ])),
+    tableRow(['Topic', 'Requirement', 'Kong Position / Assessment', 'Status', 'Owner / Next Action'], true),
+    ...report.requirementMatrix.map((row) => {
+      const ownerAction = [
+        row.owner && row.owner !== 'Unassigned' ? row.owner : '',
+        row.nextAction ?? '',
+      ].filter(Boolean).join(' — ');
+      return tableRow([
+        row.topicTitle,
+        row.requirement,
+        row.position ?? '',
+        row.status,
+        ownerAction,
+      ]);
+    }),
   ];
-  return table(rows.join(''), [2500, 2200, 2600, 1200, 2200]);
+  return table(rows.join(''), [2500, 4100, 4100, 1400, 3000]);
 }
 
 function openItemsTable(report: MeetingReport): string {
@@ -145,7 +167,7 @@ function table(rows: string, widths: number[]): string {
 }
 
 function tableRow(cells: string[], header = false): string {
-  return `<w:tr>${cells.map((value) => `<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/>${header ? '<w:shd w:fill="E9EEF5"/>' : ''}</w:tcPr><w:p><w:r>${header ? '<w:rPr><w:b/></w:rPr>' : ''}<w:t xml:space="preserve">${xml(value)}</w:t></w:r></w:p></w:tc>`).join('')}</w:tr>`;
+  return `<w:tr><w:trPr>${header ? '<w:tblHeader/>' : ''}<w:cantSplit/></w:trPr>${cells.map((value) => `<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/>${header ? '<w:shd w:fill="E9EEF5"/>' : ''}</w:tcPr><w:p><w:r>${header ? '<w:rPr><w:b/></w:rPr>' : ''}<w:t xml:space="preserve">${xml(value)}</w:t></w:r></w:p></w:tc>`).join('')}</w:tr>`;
 }
 
 function stylesXml(): string {

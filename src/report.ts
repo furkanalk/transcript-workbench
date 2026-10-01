@@ -21,9 +21,9 @@ import type {
   TranscriptDocument,
   TranscriptSegment,
 } from './types';
-import { meetingNoteSectionLabel } from './meeting-notes';
+import { meetingNoteBlockEvidenceText, meetingNoteSectionLabel } from './meeting-notes';
 
-type FindingKind = 'requirement' | 'current-state' | 'assessment' | 'options' | 'recommendation' | 'decision' | 'risk' | 'open-item' | 'evidence';
+type FindingKind = 'requirement' | 'current-state' | 'assessment' | 'capability' | 'options' | 'recommendation' | 'decision' | 'risk' | 'open-item' | 'evidence';
 
 interface ModeConfig {
   maxTopics: number;
@@ -134,7 +134,7 @@ const TOPIC_RULES: TopicRule[] = [
   {
     id: 'performance',
     title: 'Performance, Testing & Scalability',
-    matcher: /(performance test|load test|throughput|rps|requests per second|tps|transactions per second|high availability|benchmark|payload size|virtual cpu|vcpu|cpu utilization|capacity test)/i,
+    matcher: /(\bperformance\b|performance test|load test|throughput|rps|requests per second|tps|transactions per second|high availability|benchmark|payload size|virtual cpu|vcpu|cpu utilization|capacity test)/i,
     overview: 'The performance discussion covered latency, throughput, test results, payload handling and infrastructure sizing considerations.',
   },
   {
@@ -173,6 +173,7 @@ const REQUIREMENT_CUES = /(\brequirement\b|we need(?: to)?|we want(?: to)?|we wo
 const CURRENT_STATE_CUES = /(currently|current implementation|right now|today we|we currently|we use|we have|we are running|existing|in our environment|our integration|mevcut|şu anda|kullanıyoruz|çalışıyor|entegrasyonumuz)/i;
 const ASSESSMENT_CUES = /(anti-pattern|antipattern|out of the box|native plugin|supported|not supported|not available|limitation|issue|problem|concern|desteklen|sınırlama|uygun değil)/i;
 const RECOMMENDATION_CUES = /(recommend|recommended|recommendation|better approach|cleaner approach|preferred approach|best practice|probably be better|would be better|önerilen yaklaşım|daha iyi yaklaşım)/i;
+const CAPABILITY_CUES = /(Kong (?:confirmed|demonstrated|explained|clarified).{0,90}(?:supported|support|native|available|can be|can use|handled|configured)|(?:is|are) supported|supported natively|can be handled natively|out[- ]of[- ]the[- ]box capability|demonstrated capability)/i;
 const OPTION_CUES = /(option|approach|alternative|another way|can use|could use|can be built|custom plugin|native plugin|ci\/cd|admin api|either|one way|possible solution|seçenek|alternatif|yaklaşım)/i;
 const DECISION_CUES = /(we agreed(?: that| to)?|agreed(?: that| to)|we decided(?: that| to)?|the decision (?:is|was)|decision was made|karar verdik|kararlaştırdık|mutabık kaldık)/i;
 const RISK_CUES = /(risk|single point of failure|outage|dependency|concern|bottleneck|anti-pattern|antipattern|uncontrolled|constraint|limitation|riskli|bağımlılık|kısıt|sınırlama)/i;
@@ -187,6 +188,10 @@ interface EvidenceItem {
   hit: SearchHit;
   score: number;
   kinds: Set<FindingKind>;
+  /** Additional source references consolidated into the same canonical finding. */
+  supportingHits?: SearchHit[];
+  /** Single customer-facing topic assignment to prevent the same finding leaking into multiple sections. */
+  primaryTopicId?: string;
 }
 
 interface TopicEvidence {
@@ -275,10 +280,11 @@ export function generateMeetingReport(
     ...collectEvidence(documents),
     ...collectMeetingNoteEvidence(meetingNotes),
   ];
-  const detectedTopicGroups = buildTopicGroups(evidence).filter((group) =>
-    group.items.length >= 2 || group.items.some((item) => item.sourceType === 'meeting-note'),
-  );
-  const topicGroups = selectTopicGroups(detectedTopicGroups, config.maxTopics);
+  const detectedTopicGroups = buildTopicGroups(evidence).filter((group) => group.items.length > 0);
+  const reportableTopicGroups = mode === 'general'
+    ? detectedTopicGroups
+    : detectedTopicGroups.filter(isReportWorthyTopic);
+  const topicGroups = selectTopicGroups(reportableTopicGroups, config.maxTopics);
   const draftConflicts = detectTopicConflicts(detectedTopicGroups);
   claimAudit.conflictingClaims = draftConflicts.length;
 
@@ -286,6 +292,7 @@ export function generateMeetingReport(
     item.kinds.has('requirement')
     || item.kinds.has('current-state')
     || item.kinds.has('recommendation')
+    || item.kinds.has('capability')
     || item.kinds.has('decision')
     || item.kinds.has('open-item')
   ));
@@ -296,11 +303,13 @@ export function generateMeetingReport(
 
   const decisions = pickByKind(allSelectedEvidence, 'decision', config.decisions);
   const risks = pickByKind(allSelectedEvidence, 'risk', config.risks);
+  const safeRisks = risks.filter((item) => isExternallySafeValidation(validateEvidenceClaim(item, 'risk', factSentence(item, 'risk'))));
   const openItems = pickByKind(allSelectedEvidence, 'open-item', config.openItems);
   const keyEvidence = uniqueEvidence(
     [
       ...pickByKind(allSelectedEvidence, 'requirement', config.keyPoints),
       ...pickByKind(allSelectedEvidence, 'assessment', config.keyPoints),
+      ...pickByKind(allSelectedEvidence, 'capability', config.keyPoints),
       ...pickByKind(allSelectedEvidence, 'recommendation', config.keyPoints),
       ...pickByKind(allSelectedEvidence, 'options', config.keyPoints),
       ...decisions,
@@ -320,6 +329,7 @@ export function generateMeetingReport(
       kind: 'takeaway',
       paragraphs: [],
       bullets: uniqueEvidence([
+        ...pickByKind(allSelectedEvidence, 'capability', config.keyPoints),
         ...pickByKind(allSelectedEvidence, 'recommendation', config.keyPoints),
         ...decisions,
         ...openItems,
@@ -349,13 +359,13 @@ export function generateMeetingReport(
       if (section) sections.push(section);
     }
 
-    if (mode === 'report' && risks.length) {
+    if (mode === 'report' && safeRisks.length) {
       sections.push({
         id: 'cross-cutting-risks',
         title: 'Cross-Cutting Risks & Architectural Considerations',
         kind: 'risk',
-        paragraphs: [buildCrossCuttingParagraph(risks, 'risk')],
-        bullets: risks.map((item) => evidenceToBullet(item, 'risk')),
+        paragraphs: [buildCrossCuttingParagraph(safeRisks, 'risk')],
+        bullets: safeRisks.map((item) => evidenceToBullet(item, 'risk')),
       });
     }
 
@@ -369,36 +379,24 @@ export function generateMeetingReport(
       });
     }
 
-    if (openItems.length) {
+    if (openItems.length && mode !== 'report') {
       sections.push({
         id: 'open-items',
-        title: mode === 'report' ? 'Outstanding Items & Next Steps' : 'Outstanding Questions & Follow-up Actions',
+        title: 'Outstanding Questions & Follow-up Actions',
         kind: 'follow-up',
-        paragraphs: mode === 'report' ? [buildNextStepsParagraph(openItems)] : [],
+        paragraphs: [],
         bullets: openItems.map((item) => evidenceToBullet(item, 'open-item')),
       });
     }
-
-    if (mode === 'report') {
-      sections.push({
-        id: 'key-takeaways',
-        title: 'Key Takeaways',
-        kind: 'takeaway',
-        paragraphs: [],
-        bullets: uniqueEvidence([
-          ...pickByKind(allSelectedEvidence, 'recommendation', config.keyPoints),
-          ...decisions,
-          ...openItems,
-          ...pickByKind(allSelectedEvidence, 'assessment', config.keyPoints),
-        ], config.keyPoints).map((item) => evidenceToBullet(item, bestKind(item))),
-      });
-    }
+    // Full Report intentionally omits a second Key Takeaways/Open Items prose section.
+    // Executive Summary + per-topic findings + the consolidated matrices provide the
+    // same information without repeating entire bullets three times in customer output.
   }
 
   const strictSections = filterReviewNeededDraft(sections);
   const segmentCount = documents.reduce((sum, document) => sum + document.transcript.segments.length, 0);
   return finalizeReport(
-    project.name,
+    deriveReportSubject(project.name, meetingNotes),
     mode,
     documents.length,
     segmentCount,
@@ -414,6 +412,20 @@ export function generateMeetingReport(
     topicGroups,
     draftConflicts,
   );
+}
+
+function deriveReportSubject(projectName: string, meetingNotes: MeetingNoteDocument[]): string {
+  if (!/^(transcript collection|untitled collection)$/i.test(projectName.trim())) return projectName;
+  const noteHeading = meetingNotes
+    .flatMap((note) => note.blocks)
+    .map((block) => block.headingPath[0])
+    .find(Boolean);
+  if (!noteHeading) return projectName;
+  const cleaned = noteHeading
+    .replace(/\s*[–—-]\s*(?:daily\s+)?meeting\s+(?:summary|notes?)$/i, '')
+    .replace(/\s*(?:daily\s+)?meeting\s+(?:summary|notes?)$/i, '')
+    .trim();
+  return cleaned || noteHeading;
 }
 
 function resolveDocuments(project: Project, selectedDocumentIds: string[]): TranscriptDocument[] {
@@ -491,10 +503,10 @@ function collectMeetingNoteEvidence(notes: MeetingNoteDocument[]): EvidenceItem[
   for (const note of notes) {
     for (const block of note.blocks) {
       const sourceSection = meetingNoteSectionLabel(block);
-      const raw = cleanText(block.text);
+      const raw = cleanText(meetingNoteBlockEvidenceText(block));
       if (!raw) continue;
 
-      for (const sentence of splitMeetingNoteSentences(raw)) {
+      for (const [sentenceIndex, sentence] of splitMeetingNoteSentences(raw).entries()) {
         const focused = normalizeTranscriptText(sentence);
         if (!isUsefulFindingText(focused)) continue;
 
@@ -505,8 +517,8 @@ function collectMeetingNoteEvidence(notes: MeetingNoteDocument[]): EvidenceItem[
         if (!kinds.size) kinds.add('evidence');
 
         const segment: TranscriptSegment = {
-          id: block.id,
-          sequence_id: block.order + 1,
+          id: `${block.id}-sentence-${sentenceIndex + 1}`,
+          sequence_id: block.order * 100 + sentenceIndex + 1,
           text: raw,
           display_time: note.date ?? 'Meeting note',
           audio_start_time: 0,
@@ -514,7 +526,7 @@ function collectMeetingNoteEvidence(notes: MeetingNoteDocument[]): EvidenceItem[
           duration: 0,
           confidence: 1,
         };
-        const score = evidenceScore(segment, focused, kinds, topicMatchCount) + 0.45;
+        const score = evidenceScore(segment, focused, kinds, topicMatchCount) + 2.25;
 
         items.push({
           sourceType: 'meeting-note',
@@ -526,8 +538,8 @@ function collectMeetingNoteEvidence(notes: MeetingNoteDocument[]): EvidenceItem[
           hit: {
             documentId: note.id,
             documentName: note.name,
-            segmentId: block.id,
-            sequenceId: block.order + 1,
+            segmentId: `${block.id}-sentence-${sentenceIndex + 1}`,
+            sequenceId: block.order * 100 + sentenceIndex + 1,
             displayTime: note.date ?? 'Meeting note',
             confidence: 1,
             score,
@@ -567,11 +579,18 @@ function classifyNoteKinds(value: string, sourceSection: string): Set<FindingKin
   if (/requirements?/i.test(path)) kinds.add('requirement');
 
   if (/thy confirmations?/i.test(path) && /\bTHY confirmed\b/i.test(value)) {
-    if (/\b(currently|current|use|uses|manages|has|have)\b/i.test(value)) kinds.add('current-state');
-    if (/\b(satisf(?:y|ies|ied)|meets?|accepted|approved|will use|will proceed)\b/i.test(value)) kinds.add('decision');
+    if (/\b(currently|uses?|manages|has|have)\b/i.test(value)) kinds.add('current-state');
+    if (/\b(satisf(?:y|ies|ied)|meets?|accepted|approved|will use|will proceed)\b/i.test(value)) {
+      kinds.add('decision');
+      kinds.delete('requirement');
+    }
   }
 
   if (/\bKong (confirmed|explained|clarified|demonstrated|presented|stated|indicated|referenced)\b/i.test(value)) kinds.add('assessment');
+  if (/\bKong (confirmed|demonstrated|explained|clarified)\b/i.test(value)
+    && /\b(supported|supports?|native|natively|available|can be|can use|handled|configured|demonstrated)\b/i.test(value)) {
+    kinds.add('capability');
+  }
   if (/\bTHY (asked|requested|would like|requires?|needs?)\b/i.test(value)) kinds.add('requirement');
   if (/\bTHY (stated|explained|mentioned|currently|uses?|manages?)\b/i.test(value)) kinds.add('current-state');
 
@@ -583,6 +602,7 @@ function classifyKinds(value: string): Set<FindingKind> {
   if (REQUIREMENT_CUES.test(value)) kinds.add('requirement');
   if (CURRENT_STATE_CUES.test(value)) kinds.add('current-state');
   if (ASSESSMENT_CUES.test(value)) kinds.add('assessment');
+  if (CAPABILITY_CUES.test(value)) kinds.add('capability');
   if (RECOMMENDATION_CUES.test(value)) kinds.add('recommendation');
   if (OPTION_CUES.test(value)) kinds.add('options');
   if (DECISION_CUES.test(value)) kinds.add('decision');
@@ -604,13 +624,47 @@ function evidenceScore(segment: TranscriptSegment, context: string, kinds: Set<F
 }
 
 function buildTopicGroups(evidence: EvidenceItem[]): TopicEvidence[] {
+  const assigned = evidence
+    .map((item) => ({ ...item, primaryTopicId: primaryTopicForEvidence(item)?.id }))
+    .filter((item) => Boolean(item.primaryTopicId));
+
   return TOPIC_RULES.map((rule) => ({
     rule,
     items: uniqueEvidence(
-      evidence.filter((item) => rule.matcher.test(`${item.hit.sourceSection ?? ''} ${item.context}`) && item.context.length >= 20),
+      assigned.filter((item) => item.primaryTopicId === rule.id && item.context.length >= 20),
       60,
     ),
   }));
+}
+
+function primaryTopicForEvidence(item: EvidenceItem): TopicRule | undefined {
+  const section = item.hit.sourceSection ?? '';
+  let best: TopicRule | undefined;
+  let bestScore = 0;
+
+  for (const rule of TOPIC_RULES) {
+    let score = 0;
+    if (section && rule.matcher.test(section)) score += 10;
+    if (rule.matcher.test(item.context)) score += 3;
+    score += topicSpecificityBoost(rule.id, `${section} ${item.context}`);
+    if (score > bestScore) {
+      best = rule;
+      bestScore = score;
+    }
+  }
+  return bestScore > 0 ? best : undefined;
+}
+
+function topicSpecificityBoost(topicId: string, value: string): number {
+  const text = value.toLocaleLowerCase('en-US');
+  if (topicId === 'licensing' && /(licens|service counting|api counting|counted)/i.test(text)) return 8;
+  if (topicId === 'migration' && /(3scale|layer7|product repository generator|migration|migrate)/i.test(text)) return 7;
+  if (topicId === 'performance' && /(\btps\b|throughput|transactions per second|benchmark|load test)/i.test(text)) return 6;
+  if (topicId === 'cicd' && /(ci\/cd|gitops|argocd|deck|pipeline|repository generator)/i.test(text)) return 5;
+  if (topicId === 'auth' && /(keycloak|oidc|oauth|jwt|hmac|credential|identity provider)/i.test(text)) return 5;
+  if (topicId === 'acl-ip' && /(acl|ip restriction|whitelist|cidr)/i.test(text)) return 5;
+  if (topicId === 'developer-portal' && /(developer portal|developer account|api catalog)/i.test(text)) return 4;
+  return 0;
 }
 
 
@@ -657,6 +711,19 @@ function detectTopicConflicts(groups: TopicEvidence[]): DraftConflict[] {
   return conflicts;
 }
 
+
+function isReportWorthyTopic(group: TopicEvidence): boolean {
+  const explicit = group.items.some((item) =>
+    item.kinds.has('requirement')
+    || item.kinds.has('decision')
+    || item.kinds.has('open-item')
+    || item.kinds.has('capability')
+  );
+  const curated = group.items.some((item) => item.sourceType === 'meeting-note');
+  const strongIndependent = group.items.filter((item) => findingQualityScore(item.context, bestKind(item)) >= 0.68).length >= 2;
+  return (curated && explicit) || explicit || strongIndependent;
+}
+
 function selectTopicGroups(groups: TopicEvidence[], limit: number): TopicEvidence[] {
   const ranked = [...groups].sort((a, b) => topicWeight(b) - topicWeight(a));
   const selected: TopicEvidence[] = [];
@@ -689,6 +756,7 @@ function topicWeight(group: TopicEvidence): number {
   const categories = new Set(group.items.flatMap((item) => [...item.kinds]));
   const explicitFollowUps = group.items.filter((item) => item.kinds.has('open-item')).length;
   const explicitDecisions = group.items.filter((item) => item.kinds.has('decision')).length;
+  const confirmedCapabilities = group.items.filter((item) => item.kinds.has('capability')).length;
   const requirements = group.items.filter((item) => item.kinds.has('requirement') || item.kinds.has('current-state')).length;
   const assessments = group.items.filter((item) => item.kinds.has('assessment') || item.kinds.has('risk')).length;
   const topAverage = group.items.slice(0, 6).reduce((sum, item) => sum + item.score, 0) / Math.max(1, Math.min(6, group.items.length));
@@ -698,6 +766,7 @@ function topicWeight(group: TopicEvidence): number {
     + categories.size * 2.2
     + Math.min(3, explicitFollowUps) * 2.4
     + Math.min(3, explicitDecisions) * 1.5
+    + Math.min(3, confirmedCapabilities) * 1.4
     + Math.min(3, requirements) * 1.1
     + Math.min(3, assessments) * 1.1
     + discoveryCriticalBonus;
@@ -712,7 +781,7 @@ function buildExecutiveSection(
   mode: SummaryMode,
 ): DraftSection {
   const topicTitles = groups.slice(0, mode === 'general' ? 5 : 7).map((group) => group.rule.title);
-  const overviewRefs = uniqueHits(groups.slice(0, 5).flatMap((group) => group.items.slice(0, 1).map((item) => item.hit)));
+  const overviewRefs = uniqueHits(groups.slice(0, 5).flatMap((group) => group.items.slice(0, 1).flatMap(referencesFromEvidence)));
 
   const paragraphs: DraftParagraph[] = [];
   if (topicTitles.length) {
@@ -723,7 +792,7 @@ function buildExecutiveSection(
     });
   }
 
-  const executiveFacts = uniqueEvidence([...decisions, ...openItems, ...keyEvidence.filter((item) => item.kinds.has('recommendation'))], factLimit);
+  const executiveFacts = uniqueEvidence([...decisions, ...openItems, ...keyEvidence.filter((item) => item.kinds.has('recommendation') || item.kinds.has('capability'))], factLimit);
   const statementItems = executiveFacts
     .filter((item) => validateEvidenceClaim(item, bestKind(item), factSentence(item, bestKind(item))).status === 'confirmed' || validateEvidenceClaim(item, bestKind(item), factSentence(item, bestKind(item))).status === 'supported')
     .slice(0, mode === 'report' ? 5 : mode === 'detailed' ? 4 : 2);
@@ -735,7 +804,7 @@ function buildExecutiveSection(
     ].filter(Boolean).join(' ');
     paragraphs.push({
       text,
-      references: uniqueHits(statementItems.map((item) => item.hit)),
+      references: uniqueHits(statementItems.flatMap(referencesFromEvidence)),
       validation: statementItems.length ? aggregateValidation(statementItems, 'evidence') : { status: 'supported', score: 0.75, evidenceCount: openItems.length, attribution: { party: 'unknown', confidence: 'unknown' } },
     });
   }
@@ -757,7 +826,7 @@ function buildGeneralTopicsSection(groups: TopicEvidence[]): DraftSection {
     paragraphs: [],
     bullets: groups.slice(0, 7).map((group) => ({
       text: `${group.rule.title} — ${group.rule.overview}`,
-      references: uniqueHits(group.items.slice(0, 2).map((item) => item.hit)),
+      references: uniqueHits(group.items.slice(0, 2).flatMap(referencesFromEvidence)),
       validation: aggregateValidation(group.items.slice(0, 2), 'evidence'),
     })),
   };
@@ -765,39 +834,60 @@ function buildGeneralTopicsSection(groups: TopicEvidence[]): DraftSection {
 
 function buildTopicSection(group: TopicEvidence, mode: SummaryMode, config: ModeConfig): DraftSection | null {
   const items = uniqueEvidence(group.items, Math.max(config.topicEvidence, 50));
-  if (items.length < 2) return null;
+  if (!items.length) return null;
 
-  const requirementItems = selectTopicKind(items, ['requirement', 'current-state'], config.subsectionItems);
-  const assessmentItems = selectTopicKind(excludeEvidence(items, requirementItems), ['assessment', 'risk'], config.subsectionItems);
-  const recommendationItems = selectTopicKind(excludeEvidence(items, [...requirementItems, ...assessmentItems]), ['recommendation'], config.subsectionItems);
-  const optionItems = selectTopicKind(excludeEvidence(items, [...requirementItems, ...assessmentItems, ...recommendationItems]), ['options', 'evidence'], config.subsectionItems);
-  const decisionItems = selectTopicKind(excludeEvidence(items, [...requirementItems, ...assessmentItems, ...recommendationItems, ...optionItems]), ['decision'], config.subsectionItems);
-  const openItems = selectTopicKind(excludeEvidence(items, [...requirementItems, ...assessmentItems, ...recommendationItems, ...optionItems, ...decisionItems]), ['open-item'], config.subsectionItems);
+  // Reserve semantically stronger roles first. This prevents an explicit decision
+  // or action item containing the word "approach" from being downgraded to a
+  // generic implementation option.
+  const decisionItems = selectTopicKind(items, ['decision'], config.subsectionItems);
+  const openItems = selectTopicKind(excludeEvidence(items, decisionItems), ['open-item'], config.subsectionItems);
+  const capabilityItems = selectTopicKind(excludeEvidence(items, [...decisionItems, ...openItems]), ['capability'], config.subsectionItems);
+  const recommendationItems = selectTopicKind(excludeEvidence(items, [...decisionItems, ...openItems, ...capabilityItems]), ['recommendation'], config.subsectionItems);
+  const requirementItems = selectTopicKind(excludeEvidence(items, [...decisionItems, ...openItems, ...capabilityItems, ...recommendationItems]), ['requirement'], config.subsectionItems);
+  const currentStateItems = selectTopicKind(excludeEvidence(items, [...decisionItems, ...openItems, ...capabilityItems, ...recommendationItems, ...requirementItems]), ['current-state'], config.subsectionItems);
+  const assessmentItems = selectTopicKind(excludeEvidence(items, [...decisionItems, ...openItems, ...capabilityItems, ...recommendationItems, ...requirementItems, ...currentStateItems]), ['assessment', 'risk'], config.subsectionItems);
+  const optionItems = selectTopicKind(excludeEvidence(items, [...decisionItems, ...openItems, ...capabilityItems, ...recommendationItems, ...requirementItems, ...currentStateItems, ...assessmentItems]), ['options', 'evidence'], config.subsectionItems);
 
   const overviewEvidence = uniqueEvidence([
     ...requirementItems.slice(0, 2),
+    ...currentStateItems.slice(0, 2),
+    ...capabilityItems.slice(0, 2),
     ...assessmentItems.slice(0, 2),
     ...recommendationItems.slice(0, 2),
-    ...optionItems.slice(0, 2),
+    ...optionItems.slice(0, 1),
     ...decisionItems.slice(0, 1),
     ...openItems.slice(0, 1),
   ], mode === 'report' ? 8 : 5);
 
-  const overviewParagraphs: DraftParagraph[] = [{
-    text: buildTopicOverview(group.rule, requirementItems, assessmentItems, recommendationItems, optionItems, decisionItems, openItems),
-    references: uniqueHits(overviewEvidence.map((item) => item.hit)),
+  const overviewText = buildTopicOverview(
+    group.rule,
+    requirementItems,
+    currentStateItems,
+    capabilityItems,
+    assessmentItems,
+    recommendationItems,
+    optionItems,
+    decisionItems,
+    openItems,
+  );
+
+  const overviewParagraphs: DraftParagraph[] = overviewText ? [{
+    text: overviewText,
+    references: uniqueHits(overviewEvidence.flatMap(referencesFromEvidence)),
     validation: aggregateValidation(overviewEvidence, 'evidence'),
-  }];
+  }] : [];
 
   const subsections: DraftSubsection[] = [];
-  pushSubsection(subsections, 'requirement-current', 'Requirement & Current State', 'requirement', requirementItems, 'requirement');
+  pushSubsection(subsections, 'requirements', 'Customer Requirement / Requirement', 'requirement', requirementItems, 'requirement');
+  pushSubsection(subsections, 'current-state', 'Current State', 'current-state', currentStateItems, 'current-state');
+  pushSubsection(subsections, 'capabilities', 'Confirmed Capabilities', 'capability', capabilityItems, 'capability');
   pushSubsection(subsections, 'assessment', 'Assessment & Considerations', 'assessment', assessmentItems, 'assessment');
   pushSubsection(subsections, 'recommendations', 'Recommendations / Preferred Approach', 'recommendation', recommendationItems, 'recommendation');
   pushSubsection(subsections, 'options', 'Implementation Options', 'options', optionItems, 'options');
   pushSubsection(subsections, 'decisions', 'Decisions / Agreed Direction', 'decision', decisionItems, 'decision');
   pushSubsection(subsections, 'open-points', 'Open Points', 'open-item', openItems, 'open-item');
 
-  if (!subsections.length) return null;
+  if (!overviewParagraphs.length && !subsections.length) return null;
 
   return {
     id: group.rule.id,
@@ -833,6 +923,8 @@ function pushSubsection(
 function buildTopicOverview(
   rule: TopicRule,
   requirements: EvidenceItem[],
+  currentState: EvidenceItem[],
+  capabilities: EvidenceItem[],
   assessments: EvidenceItem[],
   recommendations: EvidenceItem[],
   options: EvidenceItem[],
@@ -847,8 +939,9 @@ function buildTopicOverview(
     if (isExternallySafeValidation(validateEvidenceClaim(item, kind, text)) && text) parts.push(text);
   };
 
-  const requirement = requirements[0];
-  appendValidated(requirement, requirement?.kinds.has('requirement') ? 'requirement' : 'current-state');
+  appendValidated(requirements[0], 'requirement');
+  appendValidated(currentState[0], 'current-state');
+  appendValidated(capabilities[0], 'capability');
   const assessment = assessments[0];
   appendValidated(assessment, assessment?.kinds.has('risk') ? 'risk' : 'assessment');
   appendValidated(recommendations[0], 'recommendation');
@@ -864,7 +957,7 @@ function buildCrossCuttingParagraph(items: EvidenceItem[], kind: FindingKind): D
   const selected = uniqueEvidence(items, 5);
   return {
     text: `Several cross-cutting considerations affect the target architecture beyond any single feature area. ${selected.map((item) => factSentence(item, kind)).join(' ')}`,
-    references: uniqueHits(selected.map((item) => item.hit)),
+    references: uniqueHits(selected.flatMap(referencesFromEvidence)),
     validation: aggregateValidation(selected, kind),
   };
 }
@@ -873,7 +966,7 @@ function buildNextStepsParagraph(items: EvidenceItem[]): DraftParagraph {
   const selected = uniqueEvidence(items, 6);
   return {
     text: 'The next steps are the unresolved follow-up items captured below, including the remaining confirmations, implementation details and roadmap dependencies explicitly raised during the selected sessions.',
-    references: uniqueHits(selected.map((item) => item.hit)),
+    references: uniqueHits(selected.flatMap(referencesFromEvidence)),
     validation: aggregateValidation(selected, 'open-item'),
   };
 }
@@ -889,7 +982,8 @@ function selectTopicKind(items: EvidenceItem[], kinds: FindingKind[], limit: num
   const candidates = items
     .filter((item) => [...item.kinds].some((kind) => set.has(kind)))
     .sort((a, b) => kindSelectionScore(b, kinds) - kindSelectionScore(a, kinds));
-  return dedupeEvidenceInOrder(candidates, limit);
+  const curated = candidates.filter((item) => item.sourceType === 'meeting-note');
+  return dedupeEvidenceInOrder(curated.length ? curated : candidates, limit);
 }
 
 function kindSelectionScore(item: EvidenceItem, kinds: FindingKind[]): number {
@@ -905,6 +999,9 @@ function kindSelectionScore(item: EvidenceItem, kinds: FindingKind[]): number {
   if (kinds.includes('assessment') || kinds.includes('risk')) {
     if (/(anti-pattern|antipattern)/i.test(value)) score += 4.5;
     if (/(latency|single point of failure|outage|dependency|not supported|not available)/i.test(value)) score += 2.5;
+  }
+  if (kinds.includes('capability')) {
+    if (CAPABILITY_CUES.test(value) || item.kinds.has('capability')) score += 4.6;
   }
   if (kinds.includes('recommendation')) {
     if (RECOMMENDATION_CUES.test(value)) score += 4.2;
@@ -926,10 +1023,15 @@ function kindSelectionScore(item: EvidenceItem, kinds: FindingKind[]): number {
 
 function dedupeEvidenceInOrder(items: EvidenceItem[], limit: number): EvidenceItem[] {
   const chosen: EvidenceItem[] = [];
-  for (const item of items) {
+  for (const rawItem of items) {
+    const item = { ...rawItem, supportingHits: [...(rawItem.supportingHits ?? [])] };
     const normalized = normalize(item.context);
     if (!normalized) continue;
-    if (chosen.some((other) => similarity(normalized, normalize(other.context)) > 0.72)) continue;
+    const duplicateIndex = chosen.findIndex((other) => compatibleFindingKinds(other, item) && sameCanonicalFinding(other.context, item.context));
+    if (duplicateIndex >= 0) {
+      chosen[duplicateIndex] = mergeEvidenceItems(chosen[duplicateIndex], item);
+      continue;
+    }
     chosen.push(item);
     if (chosen.length >= limit) break;
   }
@@ -945,7 +1047,7 @@ function evidenceToBullet(item: EvidenceItem, kind: FindingKind): DraftBullet {
   const text = factSentence(item, kind);
   const validation = validateEvidenceClaim(item, kind, text);
   recordValidation(validation);
-  return { text, references: [item.hit], validation };
+  return { text, references: referencesFromEvidence(item), validation };
 }
 
 function recordValidation(validation: ClaimValidation): void {
@@ -983,14 +1085,22 @@ function extractFindingClause(value: string, kind: FindingKind): string {
 function factSentence(item: EvidenceItem, kind: FindingKind): string {
   if (!isUsefulFindingText(item.context) || isMeetingMetaSentence(item.context)) return '';
   const known = normalizeKnownTechnicalFact(item, kind);
-  if (known) return known;
+  if (known) return applyMetricContextSafety(known, item);
   const focusedClause = item.sourceType === 'meeting-note' ? item.context : extractFindingClause(item.context, kind);
   if (!focusedClause) return '';
   const sentence = item.sourceType === 'meeting-note' ? focusedClause : bestSentence(focusedClause, kind);
   const cleaned = stripConversationalLead(sentence);
   const body = sentenceCase(trimSentence(cleaned, 190));
   if (!body) return '';
-  if (item.sourceType === 'meeting-note') return ensurePeriod(body);
+  const finish = (value: string) => applyMetricContextSafety(ensurePeriod(value), item);
+  if (item.sourceType === 'meeting-note') {
+    const sectionLeaf = (item.hit.sourceSection ?? '').split(' › ').filter(Boolean).pop() ?? '';
+    if (kind === 'capability' && /^Kong confirmed that (?:this|it) is supported[.!]?$/i.test(body)
+      && sectionLeaf && !/(discussion|questions?|confirmations?|current state|requirements?)/i.test(sectionLeaf)) {
+      return finish(`Kong confirmed support for ${sectionLeaf}`);
+    }
+    return finish(body);
+  }
 
   const lower = /^[A-Z]{2}/.test(body) ? body : body.charAt(0).toLocaleLowerCase('en-US') + body.slice(1);
   const alreadyReported = /^(The |A |An |Kong |THY |Konnect |Developer Portal|Event Gateway|Redis|Hazelcast|CIDR|ACL|OIDC|OAuth)/.test(body);
@@ -998,48 +1108,59 @@ function factSentence(item: EvidenceItem, kind: FindingKind): string {
   switch (kind) {
     case 'requirement':
       if (/^(we|they) (need|want|wanted|would like|require)/i.test(body)) {
-        return ensurePeriod(`The requirement discussed is to ${body.replace(/^(we|they) (need|want|wanted|would like|require)(?: to)?\s+/i, '')}`);
+        return finish(`The requirement discussed is to ${body.replace(/^(we|they) (need|want|wanted|would like|require)(?: to)?\s+/i, '')}`);
       }
-      if (/^this scenario calls for/i.test(body)) return ensurePeriod(body.replace(/^this scenario calls for\s+/i, 'The requirement calls for '));
-      if (/^looking to\s+/i.test(body)) return ensurePeriod(`The requirement is to ${body.replace(/^looking to\s+/i, '')}`);
-      return ensurePeriod(alreadyReported ? body : `The requirement discussion identified that ${lower}`);
+      if (/^this scenario calls for/i.test(body)) return finish(body.replace(/^this scenario calls for\s+/i, 'The requirement calls for '));
+      if (/^looking to\s+/i.test(body)) return finish(`The requirement is to ${body.replace(/^looking to\s+/i, '')}`);
+      return finish(alreadyReported ? body : `The requirement discussion identified that ${lower}`);
     case 'current-state':
       if (/^(we|they) have an? integration/i.test(body)) {
-        return ensurePeriod(`The current implementation includes ${body.replace(/^(we|they) have\s+/i, '')}`);
+        return finish(`The current implementation includes ${body.replace(/^(we|they) have\s+/i, '')}`);
       }
       if (/^(we|they) use/i.test(body)) {
-        return ensurePeriod(`The current implementation uses ${body.replace(/^(we|they) use\s+/i, '')}`);
+        return finish(`The current implementation uses ${body.replace(/^(we|they) use\s+/i, '')}`);
       }
       if (/^(we|they) are running/i.test(body)) {
-        return ensurePeriod(`The current implementation is running ${body.replace(/^(we|they) are running\s+/i, '')}`);
+        return finish(`The current implementation is running ${body.replace(/^(we|they) are running\s+/i, '')}`);
       }
       if (/^(we|they) currently/i.test(body)) {
-        return ensurePeriod(`The current implementation ${body.replace(/^(we|they) currently\s+/i, '')}`);
+        return finish(`The current implementation ${body.replace(/^(we|they) currently\s+/i, '')}`);
       }
-      return ensurePeriod(alreadyReported ? body : `The current-state discussion noted that ${lower}`);
+      return finish(alreadyReported ? body : `The current-state discussion noted that ${lower}`);
     case 'assessment':
-      return ensurePeriod(alreadyReported ? body : `The assessment highlighted that ${lower}`);
+      return finish(alreadyReported ? body : `The assessment highlighted that ${lower}`);
+    case 'capability':
+      if (/^Kong\s+/i.test(body)) return finish(body);
+      return finish(alreadyReported ? body : `The capability was confirmed or demonstrated as follows: ${lower}`);
     case 'options':
-      if (/^(we|you|they) can\s+/i.test(body)) return ensurePeriod(`An implementation option discussed is to ${body.replace(/^(we|you|they) can\s+/i, '')}`);
-      return ensurePeriod(alreadyReported ? body : `An implementation option discussed is that ${lower}`);
+      if (/^(we|you|they) can\s+/i.test(body)) return finish(`An implementation option discussed is to ${body.replace(/^(we|you|they) can\s+/i, '')}`);
+      return finish(alreadyReported ? body : `An implementation option discussed is that ${lower}`);
     case 'recommendation':
-      if (/^(we|you|they) (recommend|prefer)\s+/i.test(body)) return ensurePeriod(`The recommended direction is to ${body.replace(/^(we|you|they) (recommend|prefer)(?: to)?\s+/i, '')}`);
-      return ensurePeriod(alreadyReported ? body : `The recommendation discussed is that ${lower}`);
+      if (/^(we|you|they) (recommend|prefer)\s+/i.test(body)) return finish(`The recommended direction is to ${body.replace(/^(we|you|they) (recommend|prefer)(?: to)?\s+/i, '')}`);
+      return finish(alreadyReported ? body : `The recommendation discussed is that ${lower}`);
     case 'decision':
       if (/^we (agreed|decided|will|are going to)/i.test(body)) {
-        return ensurePeriod(`The agreed direction was to ${body.replace(/^we (agreed(?: that)?|decided(?: that)?|will|are going to)\s+/i, '')}`);
+        return finish(`The agreed direction was to ${body.replace(/^we (agreed(?: that)?|decided(?: that)?|will|are going to)\s+/i, '')}`);
       }
-      return ensurePeriod(alreadyReported ? body : `The discussion recorded the following direction: ${lower}`);
+      return finish(alreadyReported ? body : `The discussion recorded the following direction: ${lower}`);
     case 'risk':
-      return ensurePeriod(alreadyReported ? body : `The architectural consideration is that ${lower}`);
+      return finish(alreadyReported ? body : `The architectural consideration is that ${lower}`);
     case 'open-item':
       if (/^(we|i) (need to|will) (check|confirm|share|provide|get back|come back)/i.test(body)) {
-        return ensurePeriod(`Follow-up is required to ${body.replace(/^(we|i) (need to|will)\s+/i, '')}`);
+        return finish(`Follow-up is required to ${body.replace(/^(we|i) (need to|will)\s+/i, '')}`);
       }
-      return ensurePeriod(alreadyReported ? body : `Follow-up remained open regarding ${lower.replace(/[?]+$/g, '')}`);
+      return finish(alreadyReported ? body : `Follow-up remained open regarding ${lower.replace(/[?]+$/g, '')}`);
     case 'evidence':
-      return ensurePeriod(alreadyReported ? body : `The capability was reviewed through discussion or demonstration: ${lower}`);
+      return finish(alreadyReported ? body : `The capability was reviewed through discussion or demonstration: ${lower}`);
   }
+}
+
+function applyMetricContextSafety(text: string, item: EvidenceItem): string {
+  if (!/\b\d+(?:[.,]\d+)?\s*(?:k|m)?\s*(?:TPS|RPS|transactions per second|requests per second)\b/i.test(text)) return text;
+  const evidence = `${item.context} ${item.hit.text}`;
+  if (/(benchmark conditions?|test conditions?|payload size|hardware|vCPU|CPU|latency|test environment|benchmark environment)/i.test(evidence)) return text;
+  const base = ensurePeriod(text).replace(/\.$/, '');
+  return `${base}. The specific benchmark conditions were not captured in the selected source material.`;
 }
 
 
@@ -1055,7 +1176,7 @@ function inferAttribution(item: EvidenceItem, kind: FindingKind): ReportAttribut
     if (/required actions?.*\bthy\b/i.test(sourceSection)) {
       return { party: 'customer', confidence: 'explicit', reason: 'The meeting-note action is explicitly grouped under THY.' };
     }
-    if ((kind === 'assessment' || kind === 'recommendation' || kind === 'options' || kind === 'evidence')
+    if ((kind === 'assessment' || kind === 'capability' || kind === 'recommendation' || kind === 'options' || kind === 'evidence')
       && /\bKong (confirmed|explained|clarified|demonstrated|presented|stated|indicated|referenced)\b/i.test(evidence)) {
       return { party: 'kong', confidence: 'explicit', reason: 'The meeting note explicitly attributes the statement to Kong.' };
     }
@@ -1083,7 +1204,7 @@ function inferAttribution(item: EvidenceItem, kind: FindingKind): ReportAttribut
   if ((kind === 'requirement' || kind === 'current-state') && /\b(we|our)\b/i.test(evidence)) {
     return { party: 'customer', confidence: 'inferred', reason: 'First-person requirement/current-state wording suggests the customer side, but the speaker is not explicitly identified.' };
   }
-  if ((kind === 'recommendation' || kind === 'assessment' || kind === 'options') && /\b(recommend|better approach|native plugin|out of the box|supported|not supported)\b/i.test(evidence)) {
+  if ((kind === 'recommendation' || kind === 'assessment' || kind === 'capability' || kind === 'options') && /\b(recommend|better approach|native plugin|out of the box|supported|not supported)\b/i.test(evidence)) {
     return { party: 'kong', confidence: 'inferred', reason: 'Product/recommendation wording suggests the Kong side, but the speaker is not explicitly identified.' };
   }
   return { party: 'unknown', confidence: 'unknown' };
@@ -1092,7 +1213,7 @@ function inferAttribution(item: EvidenceItem, kind: FindingKind): ReportAttribut
 function validateEvidenceClaim(item: EvidenceItem, kind: FindingKind, text: string): ClaimValidation {
   const evidence = normalizeTranscriptText(item.context);
   const attribution = inferAttribution(item, kind);
-  if (!text || !isUsefulFindingText(evidence) || looksLikeFragment(text) || isMeetingMetaSentence(evidence)) {
+  if (!text || !isUsefulFindingText(evidence) || looksLikeFragment(evidence) || looksLikeFragment(text) || isMeetingMetaSentence(evidence)) {
     return { status: 'unsupported', score: 0.1, evidenceCount: 1, reason: 'Fragmentary, low-quality or meeting-management text.', attribution };
   }
   const quality = findingQualityScore(evidence, kind);
@@ -1120,6 +1241,9 @@ function validateEvidenceClaim(item: EvidenceItem, kind: FindingKind, text: stri
   }
   if (kind === 'recommendation' && !RECOMMENDATION_CUES.test(evidence) && !(item.sourceType === 'meeting-note' && item.kinds.has('recommendation')) && !knownMatch) {
     return { status: 'unsupported', score: 0.1, evidenceCount: 1, reason: 'No explicit recommendation/preference cue in the linked evidence.', attribution };
+  }
+  if (kind === 'capability' && !CAPABILITY_CUES.test(evidence) && !(item.sourceType === 'meeting-note' && item.kinds.has('capability')) && !knownMatch) {
+    return { status: 'unsupported', score: 0.1, evidenceCount: 1, reason: 'No explicit capability confirmation or demonstration cue in the linked evidence.', attribution };
   }
 
   if (kind === 'decision' && score >= 0.68) {
@@ -1206,8 +1330,10 @@ function isTrivialOpenItem(value: string): boolean {
 function looksLikeFragment(value: string): boolean {
   const text = normalizeTranscriptText(value);
   if (!text) return true;
-  if (/\b(and|but|because|which|that|to|with|of|for|from|or)\s*$/i.test(text)) return true;
-  if (/^(and|but|because|which|so that)\b/i.test(text) && text.split(/\s+/).length < 10) return true;
+  const bare = text.replace(/[.!?]+$/, '').trim();
+  if (/\b(and|but|because|which|that|where|to|with|of|for|from|or)\s*$/i.test(bare)) return true;
+  if (/^(and|but|because|which|so that)\b/i.test(bare)) return true;
+  if (/\b(integrated or adding|have also integrated or adding|is going to return such type of)\b/i.test(bare)) return true;
   return false;
 }
 
@@ -1334,6 +1460,7 @@ function kindMatcher(kind: FindingKind): RegExp {
   if (kind === 'requirement') return REQUIREMENT_CUES;
   if (kind === 'current-state') return CURRENT_STATE_CUES;
   if (kind === 'assessment') return ASSESSMENT_CUES;
+  if (kind === 'capability') return CAPABILITY_CUES;
   if (kind === 'recommendation') return RECOMMENDATION_CUES;
   if (kind === 'options') return OPTION_CUES;
   if (kind === 'decision') return DECISION_CUES;
@@ -1343,7 +1470,7 @@ function kindMatcher(kind: FindingKind): RegExp {
 }
 
 function bestKind(item: EvidenceItem): FindingKind {
-  const priority: FindingKind[] = ['decision', 'open-item', 'recommendation', 'requirement', 'current-state', 'assessment', 'options', 'risk', 'evidence'];
+  const priority: FindingKind[] = ['decision', 'open-item', 'recommendation', 'capability', 'requirement', 'current-state', 'assessment', 'options', 'risk', 'evidence'];
   return priority.find((kind) => item.kinds.has(kind)) ?? 'evidence';
 }
 
@@ -1395,19 +1522,100 @@ function cleanText(value: string): string {
 }
 
 function normalizeTranscriptText(value: string): string {
-  return value
+  let text = value
     .replace(/(?:\.{2,}|…+)/g, ' ')
+    .replace(/\bCICV\b/gi, 'CI/CD')
+    .replace(/\bCI-CD\b/gi, 'CI/CD')
+    .replace(/\bICD pipeline\b/gi, 'CI/CD pipeline')
+    .replace(/\b3[- ]?staged\b/gi, '3scale')
+    .replace(/\bThristel\b/gi, '3scale')
+    .replace(/\bFrisKale\b/gi, '3scale')
+    .replace(/\bround books\b/gi, 'runbooks')
     .replace(/\s+/g, ' ')
     .trim();
+  if (/\bDEC\b/i.test(text) && /(synchron|control plane|declarative)/i.test(text)) {
+    text = text.replace(/\bDEC\b/g, 'decK');
+  }
+  return text;
+}
+
+function evidencePreferenceScore(item: EvidenceItem): number {
+  let score = item.score;
+  if (item.sourceType === 'meeting-note') score += 100;
+  if (/required actions?/i.test(item.hit.sourceSection ?? '')) score += 18;
+  if (/open items?|outstanding/i.test(item.hit.sourceSection ?? '')) score += 8;
+  if (item.kinds.has('decision') || item.kinds.has('capability')) score += 6;
+  score += Math.min(5, item.context.length / 80);
+  return score;
+}
+
+function referencesFromEvidence(item: EvidenceItem): SearchHit[] {
+  return uniqueHits([item.hit, ...(item.supportingHits ?? [])]);
+}
+
+function mergeEvidenceItems(left: EvidenceItem, right: EvidenceItem): EvidenceItem {
+  const preferred = evidencePreferenceScore(right) > evidencePreferenceScore(left) ? right : left;
+  const other = preferred === left ? right : left;
+  const mergedKinds = new Set([...left.kinds, ...right.kinds]);
+  const richerOpenContext = mergedKinds.has('open-item') && other.context.length > preferred.context.length * 1.05
+    ? other.context
+    : preferred.context;
+  return {
+    ...preferred,
+    context: richerOpenContext,
+    kinds: mergedKinds,
+    supportingHits: uniqueHits([
+      ...(preferred.supportingHits ?? []),
+      other.hit,
+      ...(other.supportingHits ?? []),
+    ]).filter((hit) => `${hit.documentId}:${hit.segmentId}` !== `${preferred.hit.documentId}:${preferred.hit.segmentId}`),
+  };
+}
+
+function compatibleFindingKinds(a: EvidenceItem, b: EvidenceItem): boolean {
+  const roles: FindingKind[] = ['decision', 'open-item', 'recommendation', 'capability', 'requirement', 'current-state', 'assessment', 'risk'];
+  return roles.some((kind) => a.kinds.has(kind) && b.kinds.has(kind));
+}
+
+function canonicalizeFinding(value: string): string {
+  const normalized = normalize(value)
+    .replace(/\b(assess|evaluate|determine|investigate|propose|confirm|clarify|verify|provide|review|share|further|appropriate|recommended|implementation|approach|strategy|existing|current|relevant|details|workflow|automation|how|whether|which|the|a|an|to|for|of|with|and|or|be|can|will|should)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized;
+}
+
+function sameCanonicalFinding(a: string, b: string): boolean {
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (!na || !nb) return false;
+  if (similarity(na, nb) > 0.72) return true;
+  const ca = canonicalizeFinding(a);
+  const cb = canonicalizeFinding(b);
+  if (ca && cb && similarity(ca, cb) > 0.52) return true;
+
+  const joined = `${na} || ${nb}`;
+  if (/keycloak/.test(na) && /keycloak/.test(nb) && /(migrat|user|account)/.test(joined)) return true;
+  if (/3scale/.test(na) && /3scale/.test(nb) && /(config|export|artifact|file)/.test(joined)) return true;
+  if (/product repository generator/.test(na) && /product repository generator/.test(nb)) return true;
+  if (/licens/.test(na) && /licens/.test(nb) && /(environment|service|api|count)/.test(joined)) return true;
+  if (/production/.test(na) && /production/.test(nb) && /(selected consumer|canary|restrict|activation|traffic)/.test(joined)) return true;
+  if (/scenario 07/.test(na) && /scenario 07/.test(nb) && /(oidc|oauth|mtls|auth)/.test(joined)) return true;
+  return false;
 }
 
 function uniqueEvidence(items: EvidenceItem[], limit: number): EvidenceItem[] {
-  const sorted = [...items].sort((a, b) => b.score - a.score);
+  const sorted = [...items].sort((a, b) => evidencePreferenceScore(b) - evidencePreferenceScore(a));
   const chosen: EvidenceItem[] = [];
-  for (const item of sorted) {
+  for (const rawItem of sorted) {
+    const item = { ...rawItem, supportingHits: [...(rawItem.supportingHits ?? [])] };
     const normalized = normalize(item.context);
     if (!normalized) continue;
-    if (chosen.some((other) => similarity(normalized, normalize(other.context)) > 0.72)) continue;
+    const duplicateIndex = chosen.findIndex((other) => compatibleFindingKinds(other, item) && sameCanonicalFinding(other.context, item.context));
+    if (duplicateIndex >= 0) {
+      chosen[duplicateIndex] = mergeEvidenceItems(chosen[duplicateIndex], item);
+      continue;
+    }
     chosen.push(item);
     if (chosen.length >= limit) break;
   }
@@ -1459,36 +1667,65 @@ function allSubsectionReferences(section: ReportSection): number[] {
 function buildRequirementMatrix(sections: ReportSection[]): RequirementMatrixRow[] {
   return sections
     .filter((section) => section.kind === 'technical')
-    .map((section) => {
-      const requirement = firstSubsectionBullet(section, 'requirement')
-        ?? firstSubsectionBullet(section, 'current-state');
+    .map((section): RequirementMatrixRow | null => {
+      const requirement = firstSubsectionBullet(section, 'requirement');
       const currentState = firstSubsectionBullet(section, 'current-state');
+      const capability = firstSubsectionBullet(section, 'capability');
       const recommendation = firstSubsectionBullet(section, 'recommendation');
       const assessment = firstSubsectionBullet(section, 'assessment');
       const option = firstSubsectionBullet(section, 'options');
       const decision = firstSubsectionBullet(section, 'decision');
       const open = firstSubsectionBullet(section, 'open-item');
 
+      // A customer-facing matrix should represent an actual requirement, decision or
+      // unresolved design point — not every weak observation that happened to form a section.
+      if (!requirement && !decision && !open && !capability) return null;
+
+      const requirementText = requirement?.text
+        ?? (open ? open.text : section.title);
+      const position = capability?.text ?? recommendation?.text ?? assessment?.text ?? option?.text ?? decision?.text;
       const status: RequirementMatrixRow['status'] = decision
         ? 'Confirmed'
         : open
           ? 'Open'
           : recommendation
             ? 'Proposed'
-            : assessment || option
+            : capability || assessment || option
               ? 'Discussed'
               : 'Identified';
 
+      const sameAsRequirement = open && sameCanonicalFinding(requirementText, open.text);
       return {
         topicId: section.id,
-        requirement: requirement?.text ?? section.title,
+        topicTitle: section.title,
+        requirement: requirementText,
         currentState: currentState?.text,
-        position: decision?.text ?? recommendation?.text ?? assessment?.text ?? option?.text,
+        position,
         status,
-        nextAction: open?.text,
+        owner: open ? ownerFromAttribution(open.validation.attribution) : undefined,
+        nextAction: open && !sameAsRequirement ? open.text : undefined,
         referenceIds: allSubsectionReferences(section),
       };
-    });
+    })
+    .filter((row): row is RequirementMatrixRow => row !== null);
+}
+
+function dedupeReportBullets(items: ReportBullet[]): ReportBullet[] {
+  const chosen: ReportBullet[] = [];
+  for (const item of items) {
+    const index = chosen.findIndex((other) => sameCanonicalFinding(other.text, item.text));
+    if (index < 0) {
+      chosen.push({ ...item, referenceIds: [...item.referenceIds] });
+      continue;
+    }
+    const current = chosen[index];
+    current.referenceIds = [...new Set([...current.referenceIds, ...item.referenceIds])];
+    const currentExplicit = current.validation.attribution?.confidence === 'explicit';
+    const incomingExplicit = item.validation.attribution?.confidence === 'explicit';
+    if (!currentExplicit && incomingExplicit) current.validation = item.validation;
+    if (item.text.length > current.text.length * 1.12 && incomingExplicit === currentExplicit) current.text = item.text;
+  }
+  return chosen;
 }
 
 function finalizeReport(
@@ -1563,9 +1800,9 @@ function finalizeReport(
     subsections: section.subsections?.map(mapSubsection),
   }));
 
-  const mappedKeyPoints = keyPoints.filter((item) => isExternallySafeValidation(item.validation)).map(mapBullet);
-  const mappedDecisions = decisions.filter((item) => isExternallySafeValidation(item.validation)).map(mapBullet);
-  const mappedOpenItems = openItems.filter((item) => isExternallySafeValidation(item.validation)).map(mapBullet);
+  const mappedKeyPoints = dedupeReportBullets(keyPoints.filter((item) => isExternallySafeValidation(item.validation)).map(mapBullet));
+  const mappedDecisions = dedupeReportBullets(decisions.filter((item) => isExternallySafeValidation(item.validation)).map(mapBullet));
+  const mappedOpenItems = dedupeReportBullets(openItems.filter((item) => isExternallySafeValidation(item.validation)).map(mapBullet));
 
   const conflicts: ReportConflict[] = draftConflicts.map((conflict) => ({
     id: conflict.id,
