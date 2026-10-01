@@ -1,4 +1,5 @@
-import type { MeetingReport, ReportSection, TranscriptDocument, TranscriptFile, TranscriptSegment } from './types';
+import type { ExportProfile, MeetingReport, ReportSection, TranscriptDocument, TranscriptFile, TranscriptSegment } from './types';
+import { buildReportDocx } from './docx';
 
 export type ExportFormat = 'json' | 'txt' | 'md';
 
@@ -64,12 +65,15 @@ export function downloadHtmlContent(content: string, filename: string) {
 
 
 export interface ReportExportOptions {
-  /** Source filenames/timestamps are useful for internal traceability but are hidden in professional exports by default. */
+  /** External is the customer-facing deliverable. Internal includes evidence and QA details. */
+  profile?: ExportProfile;
+  /** Optional override. External reports hide transcript filenames/timestamps by default. */
   includeReferences?: boolean;
 }
 
 export function reportToText(report: MeetingReport, options: ReportExportOptions = {}): string {
-  const includeReferences = options.includeReferences === true;
+  const profile = options.profile ?? 'external';
+  const includeReferences = options.includeReferences ?? profile === 'internal';
   const lines: string[] = [];
   lines.push(reportTitle(report));
   lines.push(reportMeta(report));
@@ -92,6 +96,33 @@ export function reportToText(report: MeetingReport, options: ReportExportOptions
       lines.push('');
     }
   }
+  if (report.requirementMatrix.length) {
+    lines.push('REQUIREMENT MATRIX');
+    for (const row of report.requirementMatrix) {
+      lines.push(`- ${row.requirement}`);
+      if (row.currentState) lines.push(`  Current State: ${row.currentState}`);
+      if (row.position) lines.push(`  Assessment / Position: ${row.position}`);
+      lines.push(`  Status: ${row.status}`);
+      if (row.nextAction) lines.push(`  Next Action: ${row.nextAction}`);
+    }
+    lines.push('');
+  }
+  if (report.structuredOpenItems.length) {
+    lines.push('OUTSTANDING ITEMS');
+    for (const item of report.structuredOpenItems) lines.push(`- [${item.status}] ${item.text} · Owner: ${item.owner}`);
+    lines.push('');
+  }
+  if (profile === 'internal') {
+    lines.push('INTERNAL QA');
+    lines.push(`Coverage: ${report.coverage.includedTopics}/${report.coverage.detectedTopics} topics (${report.coverage.coveragePercent}%)`);
+    lines.push(`Confirmed claims: ${report.validation.confirmedClaims}; Supported: ${report.validation.supportedClaims}; Omitted: ${report.validation.omittedClaims}; Potential conflicts: ${report.conflicts.length}`);
+    for (const conflict of report.conflicts) lines.push(`- ${conflict.summary}`);
+    if (report.reviewQueue.length) {
+      lines.push(`Review queue (${report.reviewQueue.length}):`);
+      for (const item of report.reviewQueue) lines.push(`- [${item.status}] ${item.text}${item.reason ? ` — ${item.reason}` : ''}`);
+    }
+    lines.push('');
+  }
   if (includeReferences) {
     lines.push(referencesTitle(report).toUpperCase());
     for (const reference of report.references) {
@@ -102,7 +133,8 @@ export function reportToText(report: MeetingReport, options: ReportExportOptions
 }
 
 export function reportToMarkdown(report: MeetingReport, options: ReportExportOptions = {}): string {
-  const includeReferences = options.includeReferences === true;
+  const profile = options.profile ?? 'external';
+  const includeReferences = options.includeReferences ?? profile === 'internal';
   const lines: string[] = [];
   lines.push(`# ${reportTitle(report)}`);
   lines.push('');
@@ -128,6 +160,36 @@ export function reportToMarkdown(report: MeetingReport, options: ReportExportOpt
       lines.push('');
     }
   }
+  if (report.requirementMatrix.length) {
+    lines.push('## Requirement Matrix', '');
+    lines.push('| Requirement | Current State | Assessment / Position | Status | Next Action |');
+    lines.push('|---|---|---|---|---|');
+    for (const row of report.requirementMatrix) {
+      lines.push(`| ${escapeMarkdownCell(row.requirement)} | ${escapeMarkdownCell(row.currentState ?? '')} | ${escapeMarkdownCell(row.position ?? '')} | ${row.status} | ${escapeMarkdownCell(row.nextAction ?? '')} |`);
+    }
+    lines.push('');
+  }
+  if (report.structuredOpenItems.length) {
+    lines.push('## Outstanding Items', '');
+    lines.push('| Item | Owner | Status |');
+    lines.push('|---|---|---|');
+    for (const item of report.structuredOpenItems) lines.push(`| ${escapeMarkdownCell(item.text)} | ${item.owner} | ${item.status} |`);
+    lines.push('');
+  }
+  if (profile === 'internal') {
+    lines.push('## Internal QA', '');
+    lines.push(`- Coverage: ${report.coverage.includedTopics}/${report.coverage.detectedTopics} topics (${report.coverage.coveragePercent}%)`);
+    lines.push(`- Confirmed claims: ${report.validation.confirmedClaims}`);
+    lines.push(`- Supported claims: ${report.validation.supportedClaims}`);
+    lines.push(`- Omitted claims: ${report.validation.omittedClaims}`);
+    lines.push(`- Potential conflicts: ${report.conflicts.length}`);
+    for (const conflict of report.conflicts) lines.push(`  - ${conflict.summary}`);
+    if (report.reviewQueue.length) {
+      lines.push(`- Review queue: ${report.reviewQueue.length} omitted claim${report.reviewQueue.length === 1 ? '' : 's'}`);
+      for (const item of report.reviewQueue) lines.push(`  - **${item.status}** — ${escapeMarkdownCell(item.text)}${item.reason ? ` — ${escapeMarkdownCell(item.reason)}` : ''}`);
+    }
+    lines.push('');
+  }
   if (includeReferences) {
     lines.push(`## ${referencesTitle(report)}`);
     lines.push('');
@@ -139,8 +201,12 @@ export function reportToMarkdown(report: MeetingReport, options: ReportExportOpt
 }
 
 export function reportToHtml(report: MeetingReport, wordCompatible = false, options: ReportExportOptions = {}): string {
-  const includeReferences = options.includeReferences === true;
+  const profile = options.profile ?? 'external';
+  const includeReferences = options.includeReferences ?? profile === 'internal';
   const sections = report.sections.map((section) => reportSectionHtml(section, includeReferences)).join('');
+  const requirementMatrix = report.requirementMatrix.length ? requirementMatrixHtml(report) : '';
+  const openItems = report.structuredOpenItems.length ? openItemsHtml(report) : '';
+  const qa = profile === 'internal' ? internalQaHtml(report) : '';
   const references = includeReferences
     ? `<section class="references"><h2>${escapeHtml(referencesTitle(report))}</h2><ol class="refs">${report.references.map((reference) => `
     <li id="ref-${reference.id}"><strong>[${reference.id}]</strong> ${escapeHtml(reference.documentName)} · ${escapeHtml(formatSourceMoment(reference.documentName, reference.displayTime))} · segment #${reference.sequenceId}</li>`).join('')}</ol></section>`
@@ -153,91 +219,44 @@ export function reportToHtml(report: MeetingReport, wordCompatible = false, opti
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(reportTitle(report))}</title>
 <style>
-@page{size:A4;margin:20mm 18mm 20mm 18mm}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;max-width:900px;margin:42px auto;padding:0 22px;color:#172033;line-height:1.62;font-size:11.2pt}h1{font-size:24pt;margin:0 0 6px}h2{font-size:15pt;margin:28px 0 10px;border-bottom:1px solid #dfe4ea;padding-bottom:6px}h3{font-size:11.5pt;margin:18px 0 8px;color:#344054}p{margin:0 0 12px}ul{margin:8px 0 16px 22px;padding:0}li{margin:0 0 8px}.meta{color:#667085;font-size:9.5pt;margin-bottom:28px}.refs{font-size:9pt;color:#475467}.ref{font-size:8pt;vertical-align:super;color:#344054;margin-left:2px}.report-section{break-inside:auto}.report-subsection{margin:14px 0 4px}.references{break-before:page}.footer-note{margin-top:28px;color:#98a2b3;font-size:8.5pt}@media print{body{margin:0;max-width:none;padding:0}h2,h3{break-after:avoid}p,li{orphans:3;widows:3}}
+@page{size:A4;margin:20mm 18mm 20mm 18mm}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;max-width:900px;margin:42px auto;padding:0 22px;color:#172033;line-height:1.62;font-size:11.2pt}h1{font-size:24pt;margin:0 0 6px}h2{font-size:15pt;margin:28px 0 10px;border-bottom:1px solid #dfe4ea;padding-bottom:6px}h3{font-size:11.5pt;margin:18px 0 8px;color:#344054}p{margin:0 0 12px}ul{margin:8px 0 16px 22px;padding:0}li{margin:0 0 8px}.meta{color:#667085;font-size:9.5pt;margin-bottom:28px}.refs{font-size:9pt;color:#475467}.ref{font-size:8pt;vertical-align:super;color:#344054;margin-left:2px}.report-section{break-inside:auto}.report-subsection{margin:14px 0 4px}.references{break-before:page}.footer-note{margin-top:28px;color:#98a2b3;font-size:8.5pt}table{width:100%;border-collapse:collapse;margin:10px 0 22px;font-size:9.3pt}th,td{border:1px solid #d0d5dd;padding:7px 8px;vertical-align:top;text-align:left}th{background:#f2f4f7;color:#344054}.qa-box{border:1px solid #d0d5dd;background:#f8fafc;padding:12px 14px;margin:12px 0 20px}.status{white-space:nowrap;font-weight:600}@media print{body{margin:0;max-width:none;padding:0}h2,h3{break-after:avoid}p,li{orphans:3;widows:3}}
 </style>
 </head>
 <body>
 <h1>${escapeHtml(reportTitle(report))}</h1>
 <div class="meta">${escapeHtml(report.title)} · ${escapeHtml(reportMeta(report))}</div>
 ${sections}
+${requirementMatrix}
+${openItems}
+${qa}
 ${references}
 <div class="footer-note">${escapeHtml(report.language === 'tr' ? 'Seçili toplantı transcript kapsamı temel alınarak hazırlanmıştır.' : 'Prepared from the selected meeting transcript scope.')}</div>
 </body>
 </html>`;
 }
 
-export function downloadWordReport(report: MeetingReport, filename: string, options: ReportExportOptions = {}): void {
-  const html = reportToHtml(report, true, options);
-  const blob = new Blob(['\ufeff', html], { type: 'application/msword;charset=utf-8' });
-  downloadBlob(blob, filename.endsWith('.doc') ? filename : `${filename}.doc`);
+export async function downloadWordReport(report: MeetingReport, filename: string, options: ReportExportOptions = {}): Promise<void> {
+  const profile = options.profile ?? 'external';
+  const blob = await buildReportDocx(report, profile);
+  downloadBlob(blob, filename.endsWith('.docx') ? filename : `${filename}.docx`);
 }
 
 export async function downloadPdfReport(report: MeetingReport, filename: string, options: ReportExportOptions = {}): Promise<void> {
-  const includeReferences = options.includeReferences === true;
-  const pdfMake = await ensurePdfMake();
-  const content: unknown[] = [
-    { text: reportTitle(report), style: 'title' },
-    { text: `${report.title} · ${reportMeta(report)}`, style: 'meta' },
-  ];
-
-  for (const section of report.sections) {
-    content.push({ text: section.title, style: 'heading', margin: [0, 14, 0, 7] });
-    for (const paragraph of section.paragraphs) {
-      content.push({ text: reportPdfText(paragraph.text, paragraph.referenceIds, includeReferences), style: 'paragraph' });
-    }
-    if (section.bullets.length) {
-      content.push({
-        ul: section.bullets.map((bullet) => ({ text: reportPdfText(bullet.text, bullet.referenceIds, includeReferences) })),
-        margin: [8, 2, 0, 10],
-      });
-    }
-    for (const subsection of section.subsections ?? []) {
-      content.push({ text: subsection.title, style: 'subheading', margin: [0, 8, 0, 5] });
-      for (const paragraph of subsection.paragraphs) {
-        content.push({ text: reportPdfText(paragraph.text, paragraph.referenceIds, includeReferences), style: 'paragraph' });
-      }
-      if (subsection.bullets.length) {
-        content.push({
-          ul: subsection.bullets.map((bullet) => ({ text: reportPdfText(bullet.text, bullet.referenceIds, includeReferences) })),
-          margin: [12, 0, 0, 8],
-        });
-      }
-    }
-  }
-
-  if (includeReferences) {
-    content.push({ text: referencesTitle(report), style: 'heading', pageBreak: 'before', margin: [0, 0, 0, 7] });
-    content.push({
-      ol: report.references.map((reference) => `${reference.documentName} · ${formatSourceMoment(reference.documentName, reference.displayTime)} · segment #${reference.sequenceId}`),
-      style: 'references',
-    });
-  }
-
-  const definition = {
-    pageSize: 'A4',
-    pageMargins: [52, 54, 52, 54],
-    defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.32 },
-    content,
-    styles: {
-      title: { fontSize: 22, bold: true, color: '#172033', margin: [0, 0, 0, 4] },
-      meta: { fontSize: 9, color: '#667085', margin: [0, 0, 0, 16] },
-      heading: { fontSize: 14, bold: true, color: '#172033' },
-      subheading: { fontSize: 11.5, bold: true, color: '#344054' },
-      paragraph: { fontSize: 10.5, color: '#344054', margin: [0, 0, 0, 9] },
-      reference: { fontSize: 7.5, color: '#667085' },
-      references: { fontSize: 8.5, color: '#475467' },
-    },
-    footer: (currentPage: number, pageCount: number) => ({
-      columns: [
-        { text: reportTitle(report), alignment: 'left', color: '#98a2b3', fontSize: 8 },
-        { text: `Page ${currentPage} of ${pageCount}`, alignment: 'right', color: '#98a2b3', fontSize: 8 },
-      ],
-      margin: [52, 0, 52, 0],
-    }),
-  };
-
-  const outputName = filename.endsWith('.pdf') ? filename : `${filename}.pdf`;
-  pdfMake.createPdf(definition).download(outputName);
+  const profile = options.profile ?? 'external';
+  const html = reportToHtml(report, false, {
+    ...options,
+    profile,
+    includeReferences: options.includeReferences ?? profile === 'internal',
+  });
+  const popup = window.open('', '_blank', 'noopener,noreferrer,width=1000,height=800');
+  if (!popup) throw new Error('The PDF print window was blocked by the browser. Allow pop-ups and try again.');
+  popup.document.open();
+  popup.document.write(html.replace(
+    '</head>',
+    `<style>@media print{.no-print{display:none!important}}</style><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),150));</script></head>`,
+  ));
+  popup.document.close();
+  popup.document.title = filename.replace(/\.pdf$/i, '');
 }
 
 function reportSectionHtml(section: ReportSection, includeReferences: boolean): string {
@@ -251,9 +270,38 @@ function reportSectionHtml(section: ReportSection, includeReferences: boolean): 
   return `<section class="report-section"><h2>${escapeHtml(section.title)}</h2>${paragraphs}${bullets}${subsections}</section>`;
 }
 
-function reportPdfText(text: string, referenceIds: number[], includeReferences: boolean): unknown {
-  if (!includeReferences || !referenceIds.length) return text;
-  return [{ text }, { text: referenceSuffix(referenceIds), style: 'reference' }];
+
+function requirementMatrixHtml(report: MeetingReport): string {
+  const rows = report.requirementMatrix.map((row) => `<tr>
+    <td>${escapeHtml(row.requirement)}</td>
+    <td>${escapeHtml(row.currentState ?? '')}</td>
+    <td>${escapeHtml(row.position ?? '')}</td>
+    <td class="status">${escapeHtml(row.status)}</td>
+    <td>${escapeHtml(row.nextAction ?? '')}</td>
+  </tr>`).join('');
+  return `<section class="report-section"><h2>Requirement Matrix</h2><table><thead><tr><th>Requirement</th><th>Current State</th><th>Assessment / Position</th><th>Status</th><th>Next Action</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+}
+
+function openItemsHtml(report: MeetingReport): string {
+  const rows = report.structuredOpenItems.map((item) => `<tr><td>${escapeHtml(item.text)}</td><td>${escapeHtml(item.owner)}</td><td class="status">${escapeHtml(item.status)}</td></tr>`).join('');
+  return `<section class="report-section"><h2>Outstanding Items</h2><table><thead><tr><th>Item</th><th>Owner</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+}
+
+function internalQaHtml(report: MeetingReport): string {
+  const conflicts = report.conflicts.length
+    ? `<ul>${report.conflicts.map((conflict) => `<li>${escapeHtml(conflict.summary)}</li>`).join('')}</ul>`
+    : '<p>No potential cross-session capability conflicts were detected.</p>';
+  return `<section class="report-section references"><h2>Internal QA</h2><div class="qa-box">
+    <p><strong>Topic coverage:</strong> ${report.coverage.includedTopics}/${report.coverage.detectedTopics} (${report.coverage.coveragePercent}%)</p>
+    <p><strong>Claims:</strong> ${report.validation.confirmedClaims} confirmed · ${report.validation.supportedClaims} supported · ${report.validation.omittedClaims} omitted</p>
+    <p><strong>Potential conflicts:</strong> ${report.conflicts.length}</p>
+    ${conflicts}
+    ${report.reviewQueue.length ? `<h3>Review Queue</h3><ul>${report.reviewQueue.map((item) => `<li><strong>${escapeHtml(item.status)}</strong> — ${escapeHtml(item.text)}${item.reason ? ` — ${escapeHtml(item.reason)}` : ''}</li>`).join('')}</ul>` : ''}
+  </div></section>`;
+}
+
+function escapeMarkdownCell(value: string): string {
+  return value.replace(/\|/g, '\\\\|').replace(/\r?\n/g, ' ').trim();
 }
 
 function reportTitle(report: MeetingReport): string {
@@ -292,29 +340,6 @@ function referenceLinks(referenceIds: number[]): string {
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[character] ?? character));
-}
-
-async function ensurePdfMake(): Promise<any> {
-  const globalWindow = window as unknown as { pdfMake?: any };
-  if (globalWindow.pdfMake?.createPdf) return globalWindow.pdfMake;
-  await loadScript('https://cdn.jsdelivr.net/npm/pdfmake@0.2.20/build/pdfmake.min.js');
-  await loadScript('https://cdn.jsdelivr.net/npm/pdfmake@0.2.20/build/vfs_fonts.js');
-  if (!globalWindow.pdfMake?.createPdf) throw new Error('PDF engine could not be loaded. Check your network connection and try again.');
-  return globalWindow.pdfMake;
-}
-
-function loadScript(src: string): Promise<void> {
-  const existing = document.querySelector<HTMLScriptElement>(`script[data-tw-src="${src}"]`);
-  if (existing?.dataset.loaded === 'true') return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const script = existing ?? document.createElement('script');
-    script.src = src;
-    script.async = true;
-    script.dataset.twSrc = src;
-    script.addEventListener('load', () => { script.dataset.loaded = 'true'; resolve(); }, { once: true });
-    script.addEventListener('error', () => reject(new Error(`Could not load ${src}`)), { once: true });
-    if (!existing) document.head.appendChild(script);
-  });
 }
 
 export async function downloadTranscriptLowMemory(

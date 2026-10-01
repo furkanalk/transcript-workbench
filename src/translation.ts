@@ -130,6 +130,26 @@ export async function translateMeetingReport(
     keyPoints: report.keyPoints.map(mapBullet),
     decisions: report.decisions.map(mapBullet),
     openItems: report.openItems.map(mapBullet),
+    structuredOpenItems: report.structuredOpenItems.map((item) => ({
+      ...item,
+      text: translated.get(item.text) ?? item.text,
+    })),
+    requirementMatrix: report.requirementMatrix.map((row) => ({
+      ...row,
+      requirement: translated.get(row.requirement) ?? row.requirement,
+      currentState: row.currentState ? (translated.get(row.currentState) ?? row.currentState) : undefined,
+      position: row.position ? (translated.get(row.position) ?? row.position) : undefined,
+      nextAction: row.nextAction ? (translated.get(row.nextAction) ?? row.nextAction) : undefined,
+    })),
+    conflicts: report.conflicts.map((conflict) => ({
+      ...conflict,
+      summary: translated.get(conflict.summary) ?? conflict.summary,
+    })),
+    reviewQueue: report.reviewQueue.map((item) => ({
+      ...item,
+      text: translated.get(item.text) ?? item.text,
+      reason: item.reason ? (translated.get(item.reason) ?? item.reason) : undefined,
+    })),
   };
   output.wordCount = countReportWords(output);
   return output;
@@ -148,6 +168,15 @@ function collectTranslatableStrings(report: MeetingReport): string[] {
     ...report.keyPoints.map((bullet) => bullet.text),
     ...report.decisions.map((bullet) => bullet.text),
     ...report.openItems.map((bullet) => bullet.text),
+    ...report.structuredOpenItems.map((item) => item.text),
+    ...report.requirementMatrix.flatMap((row) => [
+      row.requirement,
+      row.currentState ?? '',
+      row.position ?? '',
+      row.nextAction ?? '',
+    ]),
+    ...report.conflicts.map((conflict) => conflict.summary),
+    ...report.reviewQueue.flatMap((item) => [item.text, item.reason ?? '']),
   ].filter((value) => value.trim().length > 0);
   return [...new Set(values)];
 }

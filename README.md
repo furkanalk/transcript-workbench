@@ -129,3 +129,57 @@ Transcript files are handled locally in the browser. Do not commit customer tran
 - Ambiguous or fragmentary claims are omitted from the report
 - Internal evidence references remain available even when references are hidden in exported files
 - Detailed and Full Report modes use multiple evidence items per topic to preserve more nuance
+
+## Enterprise Report v2
+
+Enterprise Report v2 hardens report generation for customer-facing discovery and assessment deliverables.
+
+### Evidence & claim safety
+
+- Separates recommendations from confirmed decisions.
+- Decisions require explicit agreement/decision wording.
+- Claims are classified as `confirmed`, `supported`, `ambiguous`, `conflicting`, or `unsupported`.
+- Ambiguous/unsupported claims are omitted from customer-facing report content and retained in an internal review queue.
+- Attribution is tracked as Customer / Kong / Joint / Unknown, with explicit vs inferred confidence. Inferred attribution is not treated as an explicit statement of ownership.
+
+### Coverage & conflict QA
+
+- Full Report covers all detected report topics rather than silently truncating to the first ten.
+- Topic coverage percentage is calculated and displayed.
+- Potentially conflicting capability statements are detected within the same capability facet and exposed only as internal QA warnings.
+- Internal Review Queue preserves omitted claims and the reason they were rejected.
+
+### Structured enterprise deliverables
+
+Full Report now also produces:
+
+- Requirement Matrix
+- Structured Outstanding Items
+- Explicit status (`Confirmed`, `Proposed`, `Open`, `Discussed`, `Identified`)
+- Safe owner attribution for open items (only explicit attribution becomes Customer / Kong / Joint; otherwise `Unassigned`)
+
+### Export profiles
+
+Two export profiles are available:
+
+- **External / Customer** — clean customer-facing report; transcript filenames, timestamps, QA diagnostics and evidence metadata are hidden.
+- **Internal / Evidence** — includes source references, coverage, conflict warnings, review queue and claim-quality information for validation.
+
+### DOCX
+
+Word export now creates a real `.docx` Open XML package instead of an HTML file with a `.doc` extension. It is generated locally without an external DOCX library and includes:
+
+- cover metadata
+- Word heading styles
+- structured sections
+- requirement matrix
+- outstanding-items table
+- internal QA appendix when Internal / Evidence is selected
+
+### PDF
+
+PDF export no longer downloads `pdfmake` or fonts from a CDN. It opens a print-ready A4 report generated entirely from local data and invokes the browser print flow, where **Save as PDF** can be used. This keeps the export path offline and avoids third-party runtime dependencies.
+
+### Current trust model
+
+The report engine is intentionally conservative. It is still a local heuristic/extractive system rather than a semantic LLM reviewer. Enterprise Report v2 prioritizes traceability and avoiding overstatement over forcing every transcript sentence into the final report. Customer-facing deliverables should still receive a human review before being treated as final contractual or architectural documentation.

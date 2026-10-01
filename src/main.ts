@@ -9,6 +9,7 @@ import type {
   AnswerResult,
   AppTab,
   ConfidenceFilter,
+  ExportProfile,
   Project,
   MeetingReport,
   SummaryLanguage,
@@ -36,6 +37,7 @@ let summaryBusy = false;
 let summaryError: string | null = null;
 let summaryProgress: string | null = null;
 let includeReportReferencesInExport = false;
+let reportExportProfile: ExportProfile = 'external';
 let exportCleanupEnabled = false;
 let exportReadableEnabled = true;
 let answerResult: AnswerResult | null = null;
@@ -484,10 +486,13 @@ function renderSummary(project: Project): string {
           <button data-action="export-summary" data-format="word" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>Word</button>
           <button data-action="export-summary" data-format="pdf" class="quiet-button" ${meetingReport && !summaryBusy ? '' : 'disabled'}>PDF</button>
         </div>
-        <label class="flex items-center gap-2 text-[10px] text-slate-600">
-          <input data-report-export-references type="checkbox" ${includeReportReferencesInExport ? 'checked' : ''} class="h-3.5 w-3.5 accent-cyan-400" />
-          Include source references in exported report
-        </label>
+        <div class="flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950 p-1 text-[10px]">
+          <button data-action="set-report-export-profile" data-export-profile="external" class="rounded-md px-2.5 py-1.5 ${reportExportProfile === 'external' ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}">External / Customer</button>
+          <button data-action="set-report-export-profile" data-export-profile="internal" class="rounded-md px-2.5 py-1.5 ${reportExportProfile === 'internal' ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}">Internal / Evidence</button>
+        </div>
+        <div class="text-[10px] leading-4 text-slate-600">${reportExportProfile === 'external'
+          ? 'Customer-facing export: clean report, no transcript filenames/timestamps or QA metadata.'
+          : 'Internal export: includes evidence references, QA metrics, conflicts and review information.'}</div>
       </div>
 
       <div class="mt-5 grid gap-3 lg:grid-cols-[1fr_1fr]">
@@ -539,15 +544,27 @@ function summaryModeLabel(mode: SummaryMode): string {
 function renderMeetingReport(report: MeetingReport): string {
   return `
     <div class="mt-6 space-y-6">
-      <div class="grid grid-cols-2 gap-3 md:grid-cols-5">
+      <div class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
         ${metricCard('Sources', String(report.sourceCount))}
         ${metricCard('Segments', report.segmentCount.toLocaleString())}
         ${metricCard('Words', report.wordCount.toLocaleString())}
-        ${metricCard('References', String(report.references.length))}
-        ${metricCard('Claims omitted', String(report.validation.omittedClaims))}
+        ${metricCard('Coverage', `${report.coverage.coveragePercent}%`)}
+        ${metricCard('Confirmed', String(report.validation.confirmedClaims))}
+        ${metricCard('Omitted', String(report.validation.omittedClaims))}
+        ${metricCard('Conflicts', String(report.conflicts.length))}
       </div>
 
-      <div class="rounded-xl border border-emerald-900/25 bg-emerald-950/[0.08] px-4 py-3 text-[11px] leading-5 text-emerald-200/75">Strict evidence mode is enabled. Recommendations are kept separate from decisions, decisions require explicit agreement language, and ambiguous claims are omitted from the generated report. ${report.validation.omittedClaims ? `${report.validation.omittedClaims} candidate claim${report.validation.omittedClaims === 1 ? '' : 's'} were omitted for requiring review.` : 'No generated claims were omitted by the claim gate.'}</div>
+      <div class="rounded-xl border border-emerald-900/25 bg-emerald-950/[0.08] px-4 py-3 text-[11px] leading-5 text-emerald-200/75">Enterprise evidence mode is enabled. Recommendations remain distinct from decisions, decisions require explicit agreement language, customer/Kong attribution is only treated as explicit when the transcript names the party, and ambiguous or unsupported claims are excluded from the customer-facing report.</div>
+
+      ${(report.conflicts.length || report.reviewQueue.length || report.coverage.uncoveredTopics.length) ? `
+        <details class="rounded-xl border border-amber-900/25 bg-amber-950/[0.05] p-4">
+          <summary class="cursor-pointer select-none text-xs font-semibold text-amber-200">Internal QA Review · ${report.reviewQueue.length} claim${report.reviewQueue.length === 1 ? '' : 's'} queued · ${report.conflicts.length} potential conflict${report.conflicts.length === 1 ? '' : 's'}</summary>
+          <div class="mt-4 space-y-4 border-t border-amber-900/20 pt-4">
+            ${report.coverage.uncoveredTopics.length ? `<div><div class="text-[10px] font-semibold uppercase tracking-wider text-amber-300/70">Topics not included because of report scope</div><div class="mt-1 text-xs leading-5 text-slate-500">${report.coverage.uncoveredTopics.map(escapeHtml).join(' · ')}</div></div>` : ''}
+            ${report.conflicts.length ? `<div><div class="text-[10px] font-semibold uppercase tracking-wider text-amber-300/70">Potential cross-session conflicts</div><ul class="mt-2 space-y-2">${report.conflicts.map((conflict) => `<li class="text-xs leading-5 text-slate-400">${escapeHtml(conflict.summary)}</li>`).join('')}</ul></div>` : ''}
+            ${report.reviewQueue.length ? `<div><div class="text-[10px] font-semibold uppercase tracking-wider text-amber-300/70">Omitted claims requiring review</div><ul class="mt-2 space-y-2">${report.reviewQueue.slice(0, 20).map((item) => `<li class="rounded-lg border border-slate-800 bg-black/10 px-3 py-2 text-xs leading-5 text-slate-400"><div>${escapeHtml(item.text)}</div>${item.reason ? `<div class="mt-1 text-[10px] text-slate-600">${escapeHtml(item.status)} · ${escapeHtml(item.reason)}</div>` : ''}</li>`).join('')}</ul>${report.reviewQueue.length > 20 ? `<div class="mt-2 text-[10px] text-slate-600">Showing the first 20 of ${report.reviewQueue.length} review items.</div>` : ''}</div>` : ''}
+          </div>
+        </details>` : ''}
 
       ${report.sections.map((section) => `
         <section class="rounded-2xl border ${section.kind === 'overview' ? 'border-cyan-900/25 bg-cyan-950/[0.08]' : section.kind === 'follow-up' ? 'border-amber-900/25 bg-amber-950/[0.06]' : 'border-slate-800 bg-slate-950/30'} p-5">
@@ -563,6 +580,17 @@ function renderMeetingReport(report: MeetingReport): string {
         </section>
       `).join('')}
 
+      ${report.requirementMatrix.length ? `
+        <details class="rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
+          <summary class="cursor-pointer select-none text-sm font-semibold text-slate-300">Requirement Matrix (${report.requirementMatrix.length})</summary>
+          <div class="mt-4 overflow-x-auto border-t border-slate-800 pt-4">
+            <table class="min-w-[900px] w-full text-left text-xs">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-600"><tr><th class="px-2 py-2">Requirement</th><th class="px-2 py-2">Current State</th><th class="px-2 py-2">Assessment / Position</th><th class="px-2 py-2">Status</th><th class="px-2 py-2">Next Action</th></tr></thead>
+              <tbody>${report.requirementMatrix.map((row) => `<tr class="border-t border-slate-800/70 align-top"><td class="px-2 py-3 text-slate-300">${escapeHtml(row.requirement)}</td><td class="px-2 py-3 text-slate-500">${escapeHtml(row.currentState ?? '')}</td><td class="px-2 py-3 text-slate-500">${escapeHtml(row.position ?? '')}</td><td class="px-2 py-3 text-cyan-300/80">${escapeHtml(row.status)}</td><td class="px-2 py-3 text-slate-500">${escapeHtml(row.nextAction ?? '')}</td></tr>`).join('')}</tbody>
+            </table>
+          </div>
+        </details>` : ''}
+
       <details class="rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
         <summary class="cursor-pointer select-none text-sm font-semibold text-slate-300">Sources & References (${report.references.length})</summary>
         <div class="mt-4 space-y-2 border-t border-slate-800 pt-4">
@@ -575,7 +603,7 @@ function renderMeetingReport(report: MeetingReport): string {
         </div>
       </details>
 
-      <div class="text-[10px] leading-5 text-slate-600">The report is generated locally using extractive, heuristic analysis with a strict evidence gate. Recommendations are not treated as decisions, and claims that do not pass the evidence checks are omitted. References remain attached internally so statements can be reviewed against the original transcript before external sharing.</div>
+      <div class="text-[10px] leading-5 text-slate-600">The report is generated locally from transcript evidence. External exports omit source filenames, timestamps and QA metadata by default; Internal / Evidence exports retain traceability, coverage metrics, conflict warnings and review information for validation before external sharing.</div>
     </div>
   `;
 }
@@ -725,6 +753,11 @@ app.addEventListener('click', (event) => {
     render();
     void regenerateMeetingReport();
   }
+  if (action === 'set-report-export-profile') {
+    reportExportProfile = actionElement.dataset.exportProfile === 'internal' ? 'internal' : 'external';
+    includeReportReferencesInExport = reportExportProfile === 'internal';
+    render();
+  }
   if (action === 'export-summary') void exportSummary(actionElement.dataset.format ?? 'md');
   if (action === 'jump-reference') jumpToReference(actionElement.dataset.documentId ?? '', actionElement.dataset.segmentId ?? '');
   if (action === 'use-example') useExample(actionElement.dataset.question ?? '');
@@ -760,12 +793,6 @@ app.addEventListener('change', (event) => {
     if (target.checked) mergeSelection.add(id);
     else mergeSelection.delete(id);
     invalidateSummaryCache();
-    render();
-    return;
-  }
-
-  if (target.matches('[data-report-export-references]') && target instanceof HTMLInputElement) {
-    includeReportReferencesInExport = target.checked;
     render();
     return;
   }
@@ -1140,25 +1167,25 @@ async function exportSummary(format: string): Promise<void> {
 
   try {
     if (format === 'txt') {
-      downloadTextContent(reportToText(meetingReport, { includeReferences: includeReportReferencesInExport }), `${stem}.txt`);
+      downloadTextContent(reportToText(meetingReport, { profile: reportExportProfile, includeReferences: includeReportReferencesInExport }), `${stem}.txt`);
       return;
     }
     if (format === 'md') {
-      downloadTextContent(reportToMarkdown(meetingReport, { includeReferences: includeReportReferencesInExport }), `${stem}.md`, true);
+      downloadTextContent(reportToMarkdown(meetingReport, { profile: reportExportProfile, includeReferences: includeReportReferencesInExport }), `${stem}.md`, true);
       return;
     }
     if (format === 'html') {
-      downloadHtmlContent(reportToHtml(meetingReport, false, { includeReferences: includeReportReferencesInExport }), `${stem}.html`);
+      downloadHtmlContent(reportToHtml(meetingReport, false, { profile: reportExportProfile, includeReferences: includeReportReferencesInExport }), `${stem}.html`);
       return;
     }
     if (format === 'word') {
-      downloadWordReport(meetingReport, `${stem}.doc`, { includeReferences: includeReportReferencesInExport });
+      await downloadWordReport(meetingReport, `${stem}.docx`, { profile: reportExportProfile, includeReferences: includeReportReferencesInExport });
       return;
     }
     if (format === 'pdf') {
       operationStatus = 'Preparing PDF…';
       updateOperationStatus();
-      await downloadPdfReport(meetingReport, `${stem}.pdf`, { includeReferences: includeReportReferencesInExport });
+      await downloadPdfReport(meetingReport, `${stem}.pdf`, { profile: reportExportProfile, includeReferences: includeReportReferencesInExport });
       operationStatus = null;
       render();
     }

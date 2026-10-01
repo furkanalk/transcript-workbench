@@ -114,13 +114,66 @@ export type SummaryMode = 'general' | 'detailed' | 'report';
 export type SummaryLanguage = 'original' | 'en' | 'tr';
 export type ReportSectionKind = 'overview' | 'discussion' | 'technical' | 'decision' | 'risk' | 'follow-up' | 'takeaway';
 export type ReportSubsectionKind = 'requirement' | 'current-state' | 'assessment' | 'options' | 'recommendation' | 'decision' | 'risk' | 'open-item' | 'evidence';
-export type ClaimValidationStatus = 'evidence-linked' | 'review-needed';
+export type ClaimValidationStatus = 'confirmed' | 'supported' | 'ambiguous' | 'conflicting' | 'unsupported';
+export type ReportAttribution = 'customer' | 'kong' | 'joint' | 'unknown';
+export type AttributionConfidence = 'explicit' | 'inferred' | 'unknown';
+export type RequirementStatus = 'Confirmed' | 'Proposed' | 'Open' | 'Discussed' | 'Identified';
+export type ExportProfile = 'external' | 'internal';
+
+export interface ReportAttributionInfo {
+  party: ReportAttribution;
+  confidence: AttributionConfidence;
+  reason?: string;
+}
+
+export interface ReportConflict {
+  id: string;
+  topicId: string;
+  topicTitle: string;
+  summary: string;
+  positiveReferenceIds: number[];
+  negativeReferenceIds: number[];
+}
+
+export interface ReportCoverage {
+  detectedTopics: number;
+  includedTopics: number;
+  coveragePercent: number;
+  uncoveredTopics: string[];
+  conflicts: number;
+}
+
+export interface RequirementMatrixRow {
+  topicId: string;
+  requirement: string;
+  currentState?: string;
+  position?: string;
+  status: RequirementStatus;
+  nextAction?: string;
+  referenceIds: number[];
+}
+
+export interface ReportOpenItem {
+  text: string;
+  owner: 'Customer' | 'Kong' | 'Joint' | 'Unassigned';
+  status: 'Open';
+  referenceIds: number[];
+}
+
+export interface ReportReviewItem {
+  text: string;
+  status: ClaimValidationStatus;
+  reason?: string;
+  referenceIds: number[];
+}
+
 
 export interface ClaimValidation {
   status: ClaimValidationStatus;
   score: number;
   evidenceCount: number;
   reason?: string;
+  attribution?: ReportAttributionInfo;
 }
 
 export interface ReportValidationSummary {
@@ -128,6 +181,11 @@ export interface ReportValidationSummary {
   includedClaims: number;
   omittedClaims: number;
   reviewNeededClaims: number;
+  confirmedClaims: number;
+  supportedClaims: number;
+  ambiguousClaims: number;
+  conflictingClaims: number;
+  unsupportedClaims: number;
 }
 
 
@@ -182,6 +240,11 @@ export interface MeetingReport {
   keyPoints: ReportBullet[];
   decisions: ReportBullet[];
   openItems: ReportBullet[];
+  structuredOpenItems: ReportOpenItem[];
+  requirementMatrix: RequirementMatrixRow[];
+  conflicts: ReportConflict[];
+  coverage: ReportCoverage;
+  reviewQueue: ReportReviewItem[];
   references: ReportReference[];
   wordCount: number;
   validation: ReportValidationSummary;
