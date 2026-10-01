@@ -1,12 +1,13 @@
 # Transcript Workbench
 
-A local-first browser workspace for importing, merging, reviewing, searching, summarizing, and exporting meeting transcript JSON files.
+A local-first browser workspace for importing, merging, reviewing, searching, summarizing, and exporting meeting transcript JSON files, with optional curated Markdown meeting notes as supporting report context.
 
 The application is designed for large multi-part meeting transcripts. Transcript content stays in the browser: there is no application backend and no transcript data is uploaded to this repository.
 
 ## Features
 
 - Import one or many transcript JSON files
+- Import curated Markdown (`.md` / `.markdown`) meeting notes alongside transcripts
 - Select all / clear selection for bulk operations
 - Merge unlimited source transcripts while preserving source-file provenance
 - Preserve the original source `display_time` instead of presenting synthetic merge offsets as real clock time
@@ -19,7 +20,7 @@ The application is designed for large multi-part meeting transcripts. Transcript
 - Confidence filtering and inline editing
 - Readable paragraph-based TXT/Markdown exports
 - Optional conservative text cleanup for human-readable exports
-- Summary/report export to TXT, Markdown, HTML, Word-compatible DOC, and PDF
+- Summary/report export to TXT, Markdown, HTML, real DOCX, and print-ready PDF
 - Output-language normalization for Original, English, and Türkçe
 - IndexedDB persistence for local collections
 - Pagination and lower-memory paths for large transcript sets
@@ -42,7 +43,7 @@ instead of incorrectly presenting a synthetic merged value as a wall-clock times
 
 ## Summaries and reports
 
-Three report depths are available and operate on the currently selected source transcripts:
+Three report depths are available and operate on the currently selected source transcripts. Detailed and Full Report modes can additionally use enabled curated Markdown meeting notes as supporting evidence:
 
 - **General** — executive-style overview targeting roughly one page when enough material is available.
 - **Detailed** — structured technical assessment organized by topic, including requirement/current state, assessment, implementation options, decisions, and open points.
@@ -54,7 +55,23 @@ Source filenames and original timestamps remain available inside the application
 
 Output can be generated in **Original**, **English**, or **Türkçe**. English/Türkçe normalization uses the browser's on-device Translator API when available, while technical terms such as Kong, OIDC, ACL, CIDR, Event Gateway, Redis, and Hazelcast are protected from literal word-by-word translation.
 
-Summary/report generation remains local and does not call an external LLM.
+Local report generation remains available without an external LLM. Optional AI Enhanced mode can refine the structured report when the user explicitly enables BYOK AI and supplies their own API key.
+
+
+## Curated Markdown meeting notes
+
+Collections can include daily summaries, workshop notes, discovery notes, action lists, and similar `.md` files alongside transcript JSON sources.
+
+- Markdown notes are stored locally with the collection.
+- Each note can be enabled or disabled for report generation independently.
+- **General** remains transcript-focused.
+- **Detailed** and **Full Report** use enabled notes as additional, separately traceable evidence.
+- Heading context is preserved, including structures such as `THY Confirmations`, `Open Items`, `Required Actions > THY`, and `Required Actions > Kong`.
+- Curated note wording is not silently promoted into stronger claims. Explicit owners are used only when the note structure or wording actually assigns them.
+- Note evidence can participate in topic coverage and conflict detection alongside transcript evidence.
+- Internal references identify Markdown note name, meeting date, and section. External / Customer exports continue to hide source metadata.
+
+A note such as `THY – Kong Daily Meeting Summary` can therefore strengthen the generated requirement matrix, current-state assessment, decision/confirmation context, migration findings, and outstanding-action list without replacing the underlying transcript evidence.
 
 ## Report exports
 
@@ -63,10 +80,10 @@ Generated summaries can be exported as:
 - Plain text (`.txt`)
 - Markdown (`.md`)
 - HTML (`.html`)
-- Word-compatible document (`.doc`)
-- PDF (`.pdf`)
+- Word document (`.docx`)
+- Print-ready PDF flow (`.pdf` via browser Save as PDF)
 
-PDF export loads the pdfmake rendering library in the browser when needed. Transcript content is rendered client-side and is not uploaded by the application. Professional exports omit transcript filenames and timestamp references by default; internal evidence references are opt-in.
+Report export remains local. Professional exports omit transcript/note filenames, timestamps, and evidence metadata by default; Internal / Evidence exports retain traceability.
 
 ## Text cleanup
 

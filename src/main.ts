@@ -3,6 +3,7 @@ import { downloadHtmlContent, downloadJson, downloadMarkdown, downloadMergedDocu
 import { answerQuestion } from './intelligence';
 import { generateMeetingReport } from './report';
 import { AI_MODEL_OPTIONS, enhanceMeetingReportWithAI, testOpenAIKey } from './ai';
+import { parseMeetingNoteMarkdown } from './meeting-notes';
 import { translateMeetingReport, TranslationUnavailableError } from './translation';
 import { formatClock, makeId, mergeTranscriptsAsync, parseTranscript } from './parser';
 import { loadWorkspace, saveWorkspace } from './storage';
@@ -13,6 +14,7 @@ import type {
   ConfidenceFilter,
   ExportProfile,
   Project,
+  MeetingNoteDocument,
   MeetingReport,
   SummaryLanguage,
   SummaryMode,
@@ -73,6 +75,7 @@ function freshCollection(): WorkspaceState {
 
 function repairCollection() {
   if (!workspace.projects.length) workspace = freshCollection();
+  for (const project of workspace.projects) project.meetingNotes ??= [];
   if (!workspace.projects.some((project) => project.id === workspace.activeProjectId)) {
     workspace.activeProjectId = workspace.projects[0]?.id ?? null;
   }
@@ -90,6 +93,7 @@ function createProject(name: string): Project {
     createdAt: now,
     updatedAt: now,
     documents: [],
+    meetingNotes: [],
   };
 }
 
@@ -119,6 +123,7 @@ function render() {
 
   const sourceCount = project?.documents.filter((document) => document.kind === 'source').length ?? 0;
   const totalSegments = project?.documents.filter((document) => document.kind === 'source').reduce((sum, document) => sum + document.transcript.segments.length, 0) ?? 0;
+  const meetingNoteCount = project?.meetingNotes?.length ?? 0;
 
   app.innerHTML = `
     <div class="app-shell min-h-screen">
@@ -142,11 +147,17 @@ function render() {
               <div><div class="text-[9px] uppercase tracking-[0.16em] text-slate-600">Sources</div><div class="text-xs font-semibold text-slate-300">${sourceCount}</div></div>
               <div class="h-6 w-px bg-white/[0.06]"></div>
               <div><div class="text-[9px] uppercase tracking-[0.16em] text-slate-600">Segments</div><div class="text-xs font-semibold text-slate-300">${totalSegments.toLocaleString()}</div></div>
+              <div class="h-6 w-px bg-white/[0.06]"></div>
+              <div><div class="text-[9px] uppercase tracking-[0.16em] text-slate-600">Notes</div><div class="text-xs font-semibold text-slate-300">${meetingNoteCount}</div></div>
             </div>
             <span data-operation-status class="operation-pill">${operationStatus ? escapeHtml(operationStatus) : 'Ready'}</span>
             <label class="primary-button cursor-pointer">
               <span class="text-base leading-none">+</span> Add transcripts
               <input id="add-files-input" type="file" accept="application/json,.json" multiple class="hidden" />
+            </label>
+            <label class="quiet-button cursor-pointer">
+              <span class="text-base leading-none">+</span> Add meeting notes
+              <input id="add-notes-input" type="file" accept="text/markdown,text/plain,.md,.markdown" multiple class="hidden" />
             </label>
           </div>
         </div>
@@ -156,6 +167,7 @@ function render() {
         <aside class="space-y-4">
           ${renderProjectPanel(project)}
           ${renderDocumentPanel(project)}
+          ${renderMeetingNotesPanel(project)}
           ${renderMergePanel(project)}
         </aside>
 
@@ -246,6 +258,54 @@ function documentRow(document: TranscriptDocument): string {
           </div>
         </button>
         <button data-action="remove-document" data-document-id="${escapeHtml(document.id)}" class="rounded px-1.5 py-1 text-xs text-slate-700 opacity-0 transition hover:bg-red-950/50 hover:text-red-300 group-hover:opacity-100" title="Remove">×</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderMeetingNotesPanel(project: Project | null): string {
+  const notes = project?.meetingNotes ?? [];
+  const included = notes.filter((note) => note.includeInReports !== false).length;
+  return `
+    <section class="panel-card rounded-2xl p-4">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="eyebrow">Meeting notes</div>
+          <div class="mt-1 text-sm font-semibold text-slate-200">${notes.length} Markdown note${notes.length === 1 ? '' : 's'}</div>
+        </div>
+        <span class="counter-pill">${included} included</span>
+      </div>
+      <p class="mt-2 text-[11px] leading-5 text-slate-600">Curated <code>.md</code> notes are used as supporting evidence in Detailed and Full Report modes. Transcript evidence remains separate and traceable.</p>
+      <label class="quiet-button mt-3 inline-flex cursor-pointer items-center gap-1.5">
+        <span>+</span> Add .md notes
+        <input id="add-notes-input-side" type="file" accept="text/markdown,text/plain,.md,.markdown" multiple class="hidden" />
+      </label>
+      <div id="notes-drop-zone" class="drop-zone mt-3">
+        <div class="text-sm font-medium text-slate-400">Drop meeting-note Markdown files</div>
+        <div class="mt-1 text-[11px] text-slate-600">Headings, Open Items and Required Actions are preserved as context</div>
+      </div>
+      <div class="mt-3 max-h-[30vh] space-y-2 overflow-y-auto pr-1">
+        ${notes.length ? notes.map((note) => meetingNoteRow(note)).join('') : `<div class="empty-side-card">Add daily summaries or curated meeting notes to enrich Detailed / Full reports.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function meetingNoteRow(note: MeetingNoteDocument): string {
+  const included = note.includeInReports !== false;
+  return `
+    <div class="group rounded-xl border border-slate-800 bg-slate-950/40 p-2.5">
+      <div class="flex items-start gap-2">
+        <input data-note-include-id="${escapeHtml(note.id)}" type="checkbox" ${included ? 'checked' : ''} class="mt-1 h-4 w-4 accent-violet-400" title="Include in Detailed / Full reports" />
+        <div class="min-w-0 flex-1">
+          <div class="truncate text-sm font-medium text-slate-300">${escapeHtml(note.name)}</div>
+          <div class="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-600">
+            <span class="rounded border border-slate-800 px-1.5 py-0.5">MEETING NOTE</span>
+            ${note.date ? `<span>${escapeHtml(note.date)}</span>` : ''}
+            <span>${note.blocks.length} blocks</span>
+          </div>
+        </div>
+        <button data-action="remove-meeting-note" data-note-id="${escapeHtml(note.id)}" class="rounded px-1.5 py-1 text-xs text-slate-700 opacity-0 transition hover:bg-red-950/50 hover:text-red-300 group-hover:opacity-100" title="Remove">×</button>
       </div>
     </div>
   `;
@@ -457,21 +517,24 @@ function renderCleanSegments(segments: TranscriptSegment[]): string {
 }
 
 function renderSummary(project: Project): string {
-  if (!project.documents.length) return emptyMain('Nothing to summarize', 'Add transcript files to the collection first.');
+  if (!project.documents.length && !(project.meetingNotes?.length)) return emptyMain('Nothing to summarize', 'Add transcript JSON or meeting-note Markdown files to the collection first.');
   const selectedIds = selectedDocumentIdsForSummary(project);
   const resolvedIds = resolvedSummaryDocumentIds(project, selectedIds);
+  const resolvedNoteIds = resolvedMeetingNoteIds(project, summaryMode);
 
   if (!meetingReport && !summaryBusy && !aiEnabled && summaryLanguage === 'original') {
     meetingReport = generateMeetingReport(project, summaryMode, selectedIds);
   }
-  if (meetingReport && !reportMatchesScope(meetingReport, summaryMode, summaryLanguage, resolvedIds)) {
+  if (meetingReport && !reportMatchesScope(meetingReport, summaryMode, summaryLanguage, resolvedIds, resolvedNoteIds)) {
     meetingReport = null;
   }
 
   const selectionCount = project.documents.filter((document) => document.kind === 'source' && mergeSelection.has(document.id)).length;
+  const includedNoteCount = resolvedNoteIds.length;
   const scopeLabel = selectionCount
     ? `${selectionCount} selected transcript${selectionCount === 1 ? '' : 's'}`
     : 'All source transcripts';
+  const enrichedScopeLabel = includedNoteCount ? `${scopeLabel} · ${includedNoteCount} meeting note${includedNoteCount === 1 ? '' : 's'}` : scopeLabel;
   const modeHint = summaryMode === 'general'
     ? 'Executive summary · approximately 1 page when enough material is available.'
     : summaryMode === 'detailed'
@@ -483,8 +546,8 @@ function renderSummary(project: Project): string {
       <div class="flex flex-col gap-4 border-b border-slate-800 pb-5 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <div class="text-lg font-semibold text-white">Transcript Summary</div>
-          <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Generate a professional meeting assessment from the selected transcripts. The report extracts evidence-linked requirements, current-state details, recommendations, implementation options, explicit decisions, risks and open items instead of replaying the conversation.</p>
-          <div class="mt-2 text-[11px] text-cyan-300/70">Scope: ${scopeLabel}${meetingReport ? ` · ${meetingReport.segmentCount.toLocaleString()} segments` : ''}</div>
+          <p class="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Generate a professional meeting assessment from the selected transcripts and optional curated meeting notes. The report extracts evidence-linked requirements, current-state details, recommendations, implementation options, explicit decisions, risks and open items instead of replaying the conversation.</p>
+          <div class="mt-2 text-[11px] text-cyan-300/70">Scope: ${enrichedScopeLabel}${meetingReport ? ` · ${meetingReport.segmentCount.toLocaleString()} transcript segments` : ''}</div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <button data-action="regenerate-summary" class="quiet-button" ${summaryBusy ? 'disabled' : ''}>${summaryBusy ? 'Generating…' : aiEnabled ? 'Generate with AI' : 'Generate'}</button>
@@ -641,14 +704,15 @@ function renderMeetingReport(report: MeetingReport): string {
         <div class="mt-4 space-y-2 border-t border-slate-800 pt-4">
           ${report.references.map((reference) => `
             <button data-action="jump-reference" data-document-id="${escapeHtml(reference.documentId)}" data-segment-id="${escapeHtml(reference.segmentId)}" class="block w-full rounded-lg border border-slate-800/70 bg-black/10 px-3 py-2 text-left hover:border-slate-700">
-              <div class="text-[11px] font-medium text-slate-400">[${reference.id}] ${escapeHtml(reference.documentName)} · ${escapeHtml(formatSourceMoment(reference.documentName, reference.displayTime))}</div>
+              <div class="text-[11px] font-medium text-slate-400">[${reference.id}] ${reference.sourceType === 'meeting-note' ? 'Meeting note · ' : ''}${escapeHtml(reference.documentName)} · ${escapeHtml(reference.sourceDate ?? formatSourceMoment(reference.documentName, reference.displayTime))}</div>
+              ${reference.sourceSection ? `<div class="mt-0.5 text-[9px] uppercase tracking-wider text-violet-400/60">${escapeHtml(reference.sourceSection)}</div>` : ''}
               <div class="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-600">${escapeHtml(reference.text)}</div>
             </button>
           `).join('')}
         </div>
       </details>
 
-      <div class="text-[10px] leading-5 text-slate-600">The report is generated locally from transcript evidence. External exports omit source filenames, timestamps and QA metadata by default; Internal / Evidence exports retain traceability, coverage metrics, conflict warnings and review information for validation before external sharing.</div>
+      <div class="text-[10px] leading-5 text-slate-600">The report is generated locally from transcript evidence and, in Detailed / Full modes, any enabled curated meeting notes. External exports omit source filenames, timestamps and QA metadata by default; Internal / Evidence exports retain traceability, coverage metrics, conflict warnings and review information for validation before external sharing.</div>
     </div>
   `;
 }
@@ -767,6 +831,7 @@ app.addEventListener('click', (event) => {
   if (action === 'delete-project') deleteProject();
   if (action === 'select-document') selectDocument(actionElement.dataset.documentId ?? '');
   if (action === 'remove-document') removeDocument(actionElement.dataset.documentId ?? '');
+  if (action === 'remove-meeting-note') removeMeetingNote(actionElement.dataset.noteId ?? '');
   if (action === 'select-all-documents') selectAllDocuments();
   if (action === 'deselect-all-documents') deselectAllDocuments();
   if (action === 'merge-selected') void mergeSelected(false);
@@ -848,6 +913,23 @@ app.addEventListener('change', (event) => {
   if (target.id === 'add-files-input' && target instanceof HTMLInputElement) {
     const files = Array.from(target.files ?? []);
     if (files.length) void importFiles(files);
+    return;
+  }
+
+  if ((target.id === 'add-notes-input' || target.id === 'add-notes-input-side') && target instanceof HTMLInputElement) {
+    const files = Array.from(target.files ?? []);
+    if (files.length) void importMeetingNotes(files);
+    return;
+  }
+
+  if (target.matches('[data-note-include-id]') && target instanceof HTMLInputElement) {
+    const project = getActiveProject();
+    const note = project?.meetingNotes?.find((item) => item.id === target.dataset.noteIncludeId);
+    if (!project || !note) return;
+    note.includeInReports = target.checked;
+    touchProject(project);
+    render();
+    if (!aiEnabled && activeTab === 'summary') void regenerateMeetingReport();
     return;
   }
 
@@ -941,24 +1023,30 @@ app.addEventListener('submit', (event) => {
 });
 
 app.addEventListener('dragover', (event) => {
-  const target = (event.target as HTMLElement).closest('#drop-zone');
+  const target = (event.target as HTMLElement).closest('#drop-zone, #notes-drop-zone');
   if (!target) return;
   event.preventDefault();
   target.classList.add('border-slate-400', 'bg-slate-800/80');
 });
 
 app.addEventListener('dragleave', (event) => {
-  const target = (event.target as HTMLElement).closest('#drop-zone');
+  const target = (event.target as HTMLElement).closest('#drop-zone, #notes-drop-zone');
   if (!target) return;
   target.classList.remove('border-slate-400', 'bg-slate-800/80');
 });
 
 app.addEventListener('drop', (event) => {
-  const target = (event.target as HTMLElement).closest('#drop-zone');
+  const target = (event.target as HTMLElement).closest('#drop-zone, #notes-drop-zone');
   if (!target) return;
   event.preventDefault();
   target.classList.remove('border-slate-400', 'bg-slate-800/80');
-  const files = Array.from(event.dataTransfer?.files ?? []).filter((file) => file.name.toLowerCase().endsWith('.json'));
+  const dropped = Array.from(event.dataTransfer?.files ?? []);
+  if ((target as HTMLElement).id === 'notes-drop-zone') {
+    const files = dropped.filter((file) => /\.(md|markdown)$/i.test(file.name));
+    if (files.length) void importMeetingNotes(files);
+    return;
+  }
+  const files = dropped.filter((file) => file.name.toLowerCase().endsWith('.json'));
   if (files.length) void importFiles(files);
 });
 
@@ -1002,6 +1090,46 @@ async function importFiles(files: File[]) {
     }
 
     if (errors.length) window.alert(`Some files could not be imported:\n\n${errors.join('\n')}`);
+  } finally {
+    operationStatus = null;
+    render();
+  }
+}
+
+async function importMeetingNotes(files: File[]) {
+  const project = getActiveProject();
+  if (!project || operationStatus) return;
+
+  const imported: MeetingNoteDocument[] = [];
+  const errors: string[] = [];
+
+  try {
+    operationStatus = `Importing meeting notes 0/${files.length}…`;
+    render();
+    await yieldToBrowser();
+
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      operationStatus = `Importing meeting notes ${index + 1}/${files.length}…`;
+      updateOperationStatus();
+      try {
+        const raw = await file.text();
+        const note = parseMeetingNoteMarkdown(file.name, raw, makeId('note'));
+        if (!note.blocks.length) throw new Error('No usable Markdown content found.');
+        imported.push(note);
+      } catch (error) {
+        errors.push(`${file.name}: ${error instanceof Error ? error.message : 'Invalid Markdown note'}`);
+      }
+      await yieldToBrowser();
+    }
+
+    if (imported.length) {
+      project.meetingNotes ??= [];
+      project.meetingNotes.push(...imported);
+      touchProject(project);
+    }
+
+    if (errors.length) window.alert(`Some meeting notes could not be imported:\n\n${errors.join('\n')}`);
   } finally {
     operationStatus = null;
     render();
@@ -1140,7 +1268,15 @@ function jumpToReference(documentId: string, segmentId: string) {
   if (!project) return;
   const document = project.documents.find((item) => item.id === documentId);
   if (!document) {
-    window.alert('The referenced source transcript is no longer in this collection.');
+    const note = project.meetingNotes?.find((item) => item.id === documentId);
+    if (note) {
+      const blob = new Blob([note.rawMarkdown], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank', 'noopener');
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      return;
+    }
+    window.alert('The referenced evidence source is no longer in this collection.');
     return;
   }
 
@@ -1165,6 +1301,17 @@ function useExample(question: string) {
   render();
 }
 
+function removeMeetingNote(noteId: string) {
+  const project = getActiveProject();
+  if (!project?.meetingNotes) return;
+  const note = project.meetingNotes.find((item) => item.id === noteId);
+  if (!note) return;
+  if (!window.confirm(`Remove meeting note "${note.name}" from this collection?`)) return;
+  project.meetingNotes = project.meetingNotes.filter((item) => item.id !== noteId);
+  touchProject(project);
+  render();
+}
+
 function selectedDocumentIdsForSummary(project: Project): string[] {
   return project.documents
     .filter((document) => document.kind === 'source' && mergeSelection.has(document.id))
@@ -1179,11 +1326,21 @@ function resolvedSummaryDocumentIds(project: Project, selectedIds: string[]): st
   return resolved.length ? resolved : sourceIds;
 }
 
-function reportMatchesScope(report: MeetingReport, mode: SummaryMode, language: SummaryLanguage, documentIds: string[]): boolean {
+function resolvedMeetingNoteIds(project: Project, mode: SummaryMode): string[] {
+  if (mode === 'general') return [];
+  return (project.meetingNotes ?? []).filter((note) => note.includeInReports !== false).map((note) => note.id);
+}
+
+function reportMatchesScope(report: MeetingReport, mode: SummaryMode, language: SummaryLanguage, documentIds: string[], meetingNoteIds: string[]): boolean {
   if (report.mode !== mode || report.language !== language) return false;
   const left = [...report.documentIds].sort();
   const right = [...documentIds].sort();
-  return left.length === right.length && left.every((id, index) => id === right[index]);
+  const leftNotes = [...(report.meetingNoteIds ?? [])].sort();
+  const rightNotes = [...meetingNoteIds].sort();
+  return left.length === right.length
+    && left.every((id, index) => id === right[index])
+    && leftNotes.length === rightNotes.length
+    && leftNotes.every((id, index) => id === rightNotes[index]);
 }
 
 function invalidateSummaryCache() {
@@ -1198,7 +1355,7 @@ async function regenerateMeetingReport(): Promise<void> {
   const selectedIds = selectedDocumentIdsForSummary(project);
   summaryBusy = true;
   summaryError = null;
-  summaryProgress = `Building ${summaryModeLabel(summaryMode)} from the selected transcript scope…`;
+  summaryProgress = `Building ${summaryModeLabel(summaryMode)} from transcripts${resolvedMeetingNoteIds(project, summaryMode).length ? ' + curated meeting notes' : ''}…`;
   meetingReport = null;
   render();
 

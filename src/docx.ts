@@ -1,4 +1,4 @@
-import type { ExportProfile, MeetingReport } from './types';
+import type { ExportProfile, MeetingReport, ReportReference } from './types';
 
 interface ZipEntry {
   name: string;
@@ -36,7 +36,7 @@ function documentXml(report: MeetingReport, profile: ExportProfile): string {
   const body: string[] = [];
   body.push(paragraph(reportTitle(report), 'Title'));
   body.push(paragraph(report.title, 'Subtitle'));
-  body.push(paragraph(`Prepared ${formatDate(report.generatedAt)} · ${report.sourceCount} meeting session${report.sourceCount === 1 ? '' : 's'}`, 'Meta'));
+  body.push(paragraph(`Prepared ${formatDate(report.generatedAt)} · ${report.sourceCount} meeting session${report.sourceCount === 1 ? '' : 's'}${report.noteSourceCount ? ` · ${report.noteSourceCount} meeting note${report.noteSourceCount === 1 ? '' : 's'}` : ''}`, 'Meta'));
   body.push(paragraph('Classification: Confidential', 'Meta'));
   body.push(pageBreak());
 
@@ -74,13 +74,24 @@ function documentXml(report: MeetingReport, profile: ExportProfile): string {
       }
     }
     body.push(paragraph('Sources & References', 'Heading2'));
-    for (const ref of report.references) body.push(paragraph(`[${ref.id}] ${ref.documentName} · ${ref.displayTime} · segment #${ref.sequenceId}`, 'Reference'));
+    for (const ref of report.references) body.push(paragraph(`[${ref.id}] ${referenceLabel(ref)}`, 'Reference'));
   }
 
   body.push(`<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1021" w:bottom="1134" w:left="1021" w:header="567" w:footer="567" w:gutter="0"/></w:sectPr>`);
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body.join('')}</w:body></w:document>`;
+}
+
+function referenceLabel(reference: ReportReference): string {
+  if (reference.sourceType === 'meeting-note') {
+    return [
+      `Meeting note: ${reference.documentName}`,
+      reference.sourceDate,
+      reference.sourceSection,
+    ].filter(Boolean).join(' · ');
+  }
+  return `${reference.documentName} · ${reference.displayTime} · segment #${reference.sequenceId}`;
 }
 
 function reportTitle(report: MeetingReport): string {

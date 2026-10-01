@@ -29,6 +29,26 @@ export interface TranscriptFile {
 }
 
 export type DocumentKind = 'source' | 'merged';
+export type EvidenceSourceType = 'transcript' | 'meeting-note';
+
+export interface MeetingNoteBlock {
+  id: string;
+  order: number;
+  headingPath: string[];
+  text: string;
+  lineStart: number;
+  lineEnd: number;
+}
+
+export interface MeetingNoteDocument {
+  id: string;
+  name: string;
+  createdAt: string;
+  date?: string;
+  includeInReports: boolean;
+  rawMarkdown: string;
+  blocks: MeetingNoteBlock[];
+}
 
 export interface TranscriptDocument {
   id: string;
@@ -45,6 +65,7 @@ export interface Project {
   createdAt: string;
   updatedAt: string;
   documents: TranscriptDocument[];
+  meetingNotes?: MeetingNoteDocument[];
 }
 
 export interface WorkspaceState {
@@ -63,6 +84,9 @@ export interface SearchHit {
   score: number;
   text: string;
   context: string;
+  sourceType?: EvidenceSourceType;
+  sourceSection?: string;
+  sourceDate?: string;
 }
 
 export interface SummaryPoint {
@@ -106,7 +130,9 @@ export interface NarrativeSummaryResult {
   mode: SummaryMode;
   sourceCount: number;
   segmentCount: number;
+  noteSourceCount?: number;
   documentIds: string[];
+  meetingNoteIds?: string[];
   paragraphs: NarrativeSummaryParagraph[];
 }
 
@@ -210,6 +236,9 @@ export interface ReportReference {
   sequenceId: number;
   displayTime: string;
   text: string;
+  sourceType?: EvidenceSourceType;
+  sourceSection?: string;
+  sourceDate?: string;
 }
 
 export interface ReportParagraph {
@@ -248,7 +277,9 @@ export interface MeetingReport {
   language: SummaryLanguage;
   sourceCount: number;
   segmentCount: number;
+  noteSourceCount?: number;
   documentIds: string[];
+  meetingNoteIds?: string[];
   sections: ReportSection[];
   keyPoints: ReportBullet[];
   decisions: ReportBullet[];

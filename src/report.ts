@@ -1,5 +1,6 @@
 import type {
   ClaimValidation,
+  MeetingNoteDocument,
   MeetingReport,
   Project,
   ReportAttributionInfo,
@@ -20,6 +21,7 @@ import type {
   TranscriptDocument,
   TranscriptSegment,
 } from './types';
+import { meetingNoteSectionLabel } from './meeting-notes';
 
 type FindingKind = 'requirement' | 'current-state' | 'assessment' | 'options' | 'recommendation' | 'decision' | 'risk' | 'open-item' | 'evidence';
 
@@ -53,7 +55,7 @@ const MODE_CONFIG: Record<SummaryMode, ModeConfig> = {
     keyPoints: 5,
     decisions: 4,
     risks: 4,
-    openItems: 5,
+    openItems: 10,
   },
   report: {
     maxTopics: 20,
@@ -63,7 +65,7 @@ const MODE_CONFIG: Record<SummaryMode, ModeConfig> = {
     keyPoints: 8,
     decisions: 6,
     risks: 5,
-    openItems: 8,
+    openItems: 16,
   },
 };
 
@@ -132,7 +134,7 @@ const TOPIC_RULES: TopicRule[] = [
   {
     id: 'performance',
     title: 'Performance, Testing & Scalability',
-    matcher: /(performance test|load test|throughput|rps|requests per second|high availability|benchmark|payload size|virtual cpu|vcpu|cpu utilization|capacity test)/i,
+    matcher: /(performance test|load test|throughput|rps|requests per second|tps|transactions per second|high availability|benchmark|payload size|virtual cpu|vcpu|cpu utilization|capacity test)/i,
     overview: 'The performance discussion covered latency, throughput, test results, payload handling and infrastructure sizing considerations.',
   },
   {
@@ -146,6 +148,18 @@ const TOPIC_RULES: TopicRule[] = [
     title: 'Network & Transport Security',
     matcher: /(tls|mtls|waf|load balancer|x-forwarded-for|proxy protocol|certificate|firewall|network flow|source ip|client ip)/i,
     overview: 'The network-security discussion covered TLS termination, client-IP propagation, certificates and the placement of security controls around Kong.',
+  },
+  {
+    id: 'migration',
+    title: 'Migration & Platform Transition',
+    matcher: /(migration|migrate|3scale|layer7|keycloak migration|product repository generator|repository generator|existing development lifecycle|migration automation)/i,
+    overview: 'The migration discussion covered source-platform artifacts, account migration, routing behavior and how existing delivery automation can be preserved during the transition to Kong.',
+  },
+  {
+    id: 'licensing',
+    title: 'Licensing & Environment Counting',
+    matcher: /(licens(?:e|ing)|service counting|api counting|counted across environments|production vs pre-production|commercial model)/i,
+    overview: 'The commercial clarification discussion covered how environments and deployed services or APIs may be counted for licensing purposes.',
   },
   {
     id: 'deployment',
@@ -166,7 +180,7 @@ const OPEN_CUES = /(follow[- ]?up|action item|outstanding|open item|\bpending\b|
 const DEMO_CUES = /(demo|demonstrat|showed|shown|walked through|walkthrough|tested|configured|implemented|created|deployed|reviewed|presented|göster|test ett|konfigüre|uygula|devreye al)/i;
 
 interface EvidenceItem {
-  document: TranscriptDocument;
+  sourceType: 'transcript' | 'meeting-note';
   segment: TranscriptSegment;
   index: number;
   context: string;
@@ -256,15 +270,28 @@ export function generateMeetingReport(
   reviewQueueDraft = [];
   const config = MODE_CONFIG[mode];
   const documents = resolveDocuments(project, selectedDocumentIds);
-  const evidence = collectEvidence(documents);
-  const detectedTopicGroups = buildTopicGroups(evidence).filter((group) => group.items.length >= 2);
+  const meetingNotes = mode === 'general' ? [] : resolveMeetingNotes(project);
+  const evidence = [
+    ...collectEvidence(documents),
+    ...collectMeetingNoteEvidence(meetingNotes),
+  ];
+  const detectedTopicGroups = buildTopicGroups(evidence).filter((group) =>
+    group.items.length >= 2 || group.items.some((item) => item.sourceType === 'meeting-note'),
+  );
   const topicGroups = selectTopicGroups(detectedTopicGroups, config.maxTopics);
   const draftConflicts = detectTopicConflicts(detectedTopicGroups);
   claimAudit.conflictingClaims = draftConflicts.length;
 
+  const curatedNoteEvidence = evidence.filter((item) => item.sourceType === 'meeting-note' && (
+    item.kinds.has('requirement')
+    || item.kinds.has('current-state')
+    || item.kinds.has('recommendation')
+    || item.kinds.has('decision')
+    || item.kinds.has('open-item')
+  ));
   const allSelectedEvidence = uniqueEvidence(
-    topicGroups.flatMap((group) => group.items),
-    mode === 'report' ? 220 : mode === 'detailed' ? 130 : 70,
+    [...topicGroups.flatMap((group) => group.items), ...curatedNoteEvidence],
+    mode === 'report' ? 240 : mode === 'detailed' ? 150 : 70,
   );
 
   const decisions = pickByKind(allSelectedEvidence, 'decision', config.decisions);
@@ -375,7 +402,9 @@ export function generateMeetingReport(
     mode,
     documents.length,
     segmentCount,
+    meetingNotes.length,
     documents.map((document) => document.id),
+    meetingNotes.map((note) => note.id),
     strictSections,
     keyEvidence.map((item) => evidenceToBullet(item, bestKind(item))),
     decisions.map((item) => evidenceToBullet(item, 'decision')),
@@ -393,6 +422,10 @@ function resolveDocuments(project: Project, selectedDocumentIds: string[]): Tran
   const selected = new Set(selectedDocumentIds);
   const scoped = sources.filter((document) => selected.has(document.id));
   return scoped.length ? scoped : sources;
+}
+
+function resolveMeetingNotes(project: Project): MeetingNoteDocument[] {
+  return (project.meetingNotes ?? []).filter((note) => note.includeInReports !== false);
 }
 
 function collectEvidence(documents: TranscriptDocument[]): EvidenceItem[] {
@@ -426,7 +459,7 @@ function collectEvidence(documents: TranscriptDocument[]): EvidenceItem[] {
 
         const score = evidenceScore(segment, focused, kinds, topicMatchCount);
         items.push({
-          document,
+          sourceType: 'transcript',
           segment,
           index,
           context: focused,
@@ -442,6 +475,7 @@ function collectEvidence(documents: TranscriptDocument[]): EvidenceItem[] {
             score,
             text: raw,
             context: focused,
+            sourceType: 'transcript',
           },
         });
       }
@@ -449,6 +483,99 @@ function collectEvidence(documents: TranscriptDocument[]): EvidenceItem[] {
   }
 
   return items;
+}
+
+function collectMeetingNoteEvidence(notes: MeetingNoteDocument[]): EvidenceItem[] {
+  const items: EvidenceItem[] = [];
+
+  for (const note of notes) {
+    for (const block of note.blocks) {
+      const sourceSection = meetingNoteSectionLabel(block);
+      const raw = cleanText(block.text);
+      if (!raw) continue;
+
+      for (const sentence of splitMeetingNoteSentences(raw)) {
+        const focused = normalizeTranscriptText(sentence);
+        if (!isUsefulFindingText(focused)) continue;
+
+        const kinds = classifyNoteKinds(focused, sourceSection);
+        const topicContext = `${sourceSection} ${focused}`.trim();
+        const topicMatchCount = TOPIC_RULES.reduce((sum, rule) => sum + (rule.matcher.test(topicContext) ? 1 : 0), 0);
+        if (!kinds.size && topicMatchCount === 0) continue;
+        if (!kinds.size) kinds.add('evidence');
+
+        const segment: TranscriptSegment = {
+          id: block.id,
+          sequence_id: block.order + 1,
+          text: raw,
+          display_time: note.date ?? 'Meeting note',
+          audio_start_time: 0,
+          audio_end_time: 0,
+          duration: 0,
+          confidence: 1,
+        };
+        const score = evidenceScore(segment, focused, kinds, topicMatchCount) + 0.45;
+
+        items.push({
+          sourceType: 'meeting-note',
+          segment,
+          index: block.order,
+          context: focused,
+          score,
+          kinds,
+          hit: {
+            documentId: note.id,
+            documentName: note.name,
+            segmentId: block.id,
+            sequenceId: block.order + 1,
+            displayTime: note.date ?? 'Meeting note',
+            confidence: 1,
+            score,
+            text: raw,
+            context: focused,
+            sourceType: 'meeting-note',
+            sourceSection: sourceSection || undefined,
+            sourceDate: note.date,
+          },
+        });
+      }
+    }
+  }
+
+  return items;
+}
+
+function splitMeetingNoteSentences(value: string): string[] {
+  const placeholders: Array<[RegExp, string]> = [
+    [/\bvs\./gi, 'vs<dot>'],
+    [/\be\.g\./gi, 'e<dot>g<dot>'],
+    [/\bi\.e\./gi, 'i<dot>e<dot>'],
+    [/\betc\./gi, 'etc<dot>'],
+  ];
+  let protectedText = value;
+  for (const [pattern, replacement] of placeholders) protectedText = protectedText.replace(pattern, replacement);
+  return splitSentences(protectedText).map((sentence) => sentence.replace(/<dot>/g, '.'));
+}
+
+function classifyNoteKinds(value: string, sourceSection: string): Set<FindingKind> {
+  const kinds = classifyKinds(value);
+  const path = sourceSection.toLocaleLowerCase('en-US');
+  kinds.add('evidence');
+
+  if (/(open items?|outstanding|follow[- ]?up|required actions?)/i.test(path)) kinds.add('open-item');
+  if (/(current architecture|current state|existing .*lifecycle|existing development lifecycle)/i.test(path)) kinds.add('current-state');
+  if (/requirements?/i.test(path)) kinds.add('requirement');
+
+  if (/thy confirmations?/i.test(path) && /\bTHY confirmed\b/i.test(value)) {
+    if (/\b(currently|current|use|uses|manages|has|have)\b/i.test(value)) kinds.add('current-state');
+    if (/\b(satisf(?:y|ies|ied)|meets?|accepted|approved|will use|will proceed)\b/i.test(value)) kinds.add('decision');
+  }
+
+  if (/\bKong (confirmed|explained|clarified|demonstrated|presented|stated|indicated|referenced)\b/i.test(value)) kinds.add('assessment');
+  if (/\bTHY (asked|requested|would like|requires?|needs?)\b/i.test(value)) kinds.add('requirement');
+  if (/\bTHY (stated|explained|mentioned|currently|uses?|manages?)\b/i.test(value)) kinds.add('current-state');
+
+  return kinds;
 }
 
 function classifyKinds(value: string): Set<FindingKind> {
@@ -480,7 +607,7 @@ function buildTopicGroups(evidence: EvidenceItem[]): TopicEvidence[] {
   return TOPIC_RULES.map((rule) => ({
     rule,
     items: uniqueEvidence(
-      evidence.filter((item) => rule.matcher.test(item.context) && item.context.length >= 20),
+      evidence.filter((item) => rule.matcher.test(`${item.hit.sourceSection ?? ''} ${item.context}`) && item.context.length >= 20),
       60,
     ),
   }));
@@ -857,12 +984,13 @@ function factSentence(item: EvidenceItem, kind: FindingKind): string {
   if (!isUsefulFindingText(item.context) || isMeetingMetaSentence(item.context)) return '';
   const known = normalizeKnownTechnicalFact(item, kind);
   if (known) return known;
-  const focusedClause = extractFindingClause(item.context, kind);
+  const focusedClause = item.sourceType === 'meeting-note' ? item.context : extractFindingClause(item.context, kind);
   if (!focusedClause) return '';
-  const sentence = bestSentence(focusedClause, kind);
+  const sentence = item.sourceType === 'meeting-note' ? focusedClause : bestSentence(focusedClause, kind);
   const cleaned = stripConversationalLead(sentence);
   const body = sentenceCase(trimSentence(cleaned, 190));
   if (!body) return '';
+  if (item.sourceType === 'meeting-note') return ensurePeriod(body);
 
   const lower = /^[A-Z]{2}/.test(body) ? body : body.charAt(0).toLocaleLowerCase('en-US') + body.slice(1);
   const alreadyReported = /^(The |A |An |Kong |THY |Konnect |Developer Portal|Event Gateway|Redis|Hazelcast|CIDR|ACL|OIDC|OAuth)/.test(body);
@@ -917,6 +1045,32 @@ function factSentence(item: EvidenceItem, kind: FindingKind): string {
 
 function inferAttribution(item: EvidenceItem, kind: FindingKind): ReportAttributionInfo {
   const evidence = normalizeTranscriptText(item.context);
+  const sourceSection = item.hit.sourceSection ?? '';
+  const combined = `${sourceSection} ${evidence}`;
+
+  if (item.sourceType === 'meeting-note') {
+    if (/required actions?.*\bkong\b/i.test(sourceSection)) {
+      return { party: 'kong', confidence: 'explicit', reason: 'The meeting-note action is explicitly grouped under Kong.' };
+    }
+    if (/required actions?.*\bthy\b/i.test(sourceSection)) {
+      return { party: 'customer', confidence: 'explicit', reason: 'The meeting-note action is explicitly grouped under THY.' };
+    }
+    if ((kind === 'assessment' || kind === 'recommendation' || kind === 'options' || kind === 'evidence')
+      && /\bKong (confirmed|explained|clarified|demonstrated|presented|stated|indicated|referenced)\b/i.test(evidence)) {
+      return { party: 'kong', confidence: 'explicit', reason: 'The meeting note explicitly attributes the statement to Kong.' };
+    }
+    if (/\bTHY (confirmed|asked|requested|stated|explained|mentioned|would like|requires?|needs?)\b/i.test(evidence)
+      || /\bTHY\b/i.test(sourceSection)) {
+      return { party: 'customer', confidence: 'explicit', reason: 'The meeting note explicitly attributes the statement or section to THY.' };
+    }
+    if (kind !== 'open-item' && /\bKong\b/i.test(combined)) {
+      return { party: 'kong', confidence: 'explicit', reason: 'The meeting note explicitly identifies Kong.' };
+    }
+    if (kind === 'open-item') {
+      return { party: 'unknown', confidence: 'unknown', reason: 'The meeting note lists the item as open but does not explicitly assign an owner.' };
+    }
+  }
+
   if (/\b(THY|Turkish Airlines)\b/i.test(evidence)) {
     return { party: 'customer', confidence: 'explicit', reason: 'Customer name is explicitly present in the linked evidence.' };
   }
@@ -947,22 +1101,24 @@ function validateEvidenceClaim(item: EvidenceItem, kind: FindingKind, text: stri
   }
 
   const cue = kindMatcher(kind);
+  const explicitKindCue = cue.test(evidence) || (item.sourceType === 'meeting-note' && item.kinds.has(kind));
   const normalizedKnown = normalizeKnownTechnicalFact(item, kind);
   const knownMatch = !!normalizedKnown && normalizedKnown === text;
   let score = (kind === 'evidence' ? 0.56 : 0.24) + quality * 0.18;
   if (knownMatch) score += 0.28;
-  if (kind === 'evidence' || cue.test(evidence)) score += 0.42;
+  if (kind === 'evidence' || explicitKindCue) score += 0.42;
+  if (item.sourceType === 'meeting-note') score += 0.08;
   if (item.segment.confidence >= 0.75) score += 0.12;
   else if (item.segment.confidence < 0.45) score -= 0.18;
   if (text.length >= 35) score += 0.06;
 
-  if (kind !== 'evidence' && !cue.test(evidence) && !knownMatch) {
+  if (kind !== 'evidence' && !explicitKindCue && !knownMatch) {
     return { status: 'unsupported', score: Math.max(0, score - 0.3), evidenceCount: 1, reason: `No explicit ${kind} cue in the linked evidence.`, attribution };
   }
-  if (kind === 'decision' && !DECISION_CUES.test(evidence) && !knownMatch) {
+  if (kind === 'decision' && !DECISION_CUES.test(evidence) && !(item.sourceType === 'meeting-note' && item.kinds.has('decision')) && !knownMatch) {
     return { status: 'unsupported', score: 0.1, evidenceCount: 1, reason: 'No explicit decision/agreement cue in the linked evidence.', attribution };
   }
-  if (kind === 'recommendation' && !RECOMMENDATION_CUES.test(evidence) && !knownMatch) {
+  if (kind === 'recommendation' && !RECOMMENDATION_CUES.test(evidence) && !(item.sourceType === 'meeting-note' && item.kinds.has('recommendation')) && !knownMatch) {
     return { status: 'unsupported', score: 0.1, evidenceCount: 1, reason: 'No explicit recommendation/preference cue in the linked evidence.', attribution };
   }
 
@@ -1265,7 +1421,7 @@ function uniqueHits(hits: SearchHit[]): SearchHit[] {
 }
 
 function evidenceKey(item: EvidenceItem): string {
-  return `${item.document.id}:${item.segment.id}`;
+  return `${item.hit.documentId}:${item.segment.id}`;
 }
 
 function joinNaturalList(values: string[]): string {
@@ -1340,7 +1496,9 @@ function finalizeReport(
   mode: SummaryMode,
   sourceCount: number,
   segmentCount: number,
+  noteSourceCount: number,
   documentIds: string[],
+  meetingNoteIds: string[],
   draftSections: DraftSection[],
   keyPoints: DraftBullet[],
   decisions: DraftBullet[],
@@ -1367,6 +1525,9 @@ function finalizeReport(
           sequenceId: hit.sequenceId,
           displayTime: hit.displayTime,
           text: hit.text,
+          sourceType: hit.sourceType ?? 'transcript',
+          sourceSection: hit.sourceSection,
+          sourceDate: hit.sourceDate,
         };
         referenceMap.set(key, reference);
       }
@@ -1463,7 +1624,9 @@ function finalizeReport(
     language: 'original',
     sourceCount,
     segmentCount,
+    noteSourceCount,
     documentIds,
+    meetingNoteIds,
     sections,
     keyPoints: mappedKeyPoints,
     decisions: mappedDecisions,

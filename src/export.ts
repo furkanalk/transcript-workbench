@@ -1,4 +1,4 @@
-import type { ExportProfile, MeetingReport, ReportSection, TranscriptDocument, TranscriptFile, TranscriptSegment } from './types';
+import type { ExportProfile, MeetingReport, ReportReference, ReportSection, TranscriptDocument, TranscriptFile, TranscriptSegment } from './types';
 import { buildReportDocx } from './docx';
 
 export type ExportFormat = 'json' | 'txt' | 'md';
@@ -126,7 +126,7 @@ export function reportToText(report: MeetingReport, options: ReportExportOptions
   if (includeReferences) {
     lines.push(referencesTitle(report).toUpperCase());
     for (const reference of report.references) {
-      lines.push(`[${reference.id}] ${reference.documentName} · ${formatSourceMoment(reference.documentName, reference.displayTime)} · segment #${reference.sequenceId}`);
+      lines.push(`[${reference.id}] ${reportReferenceSourceLabel(reference)}`);
     }
   }
   return `${lines.join('\n').trim()}\n`;
@@ -194,7 +194,7 @@ export function reportToMarkdown(report: MeetingReport, options: ReportExportOpt
     lines.push(`## ${referencesTitle(report)}`);
     lines.push('');
     for (const reference of report.references) {
-      lines.push(`[${reference.id}]: ${reference.documentName} · ${formatSourceMoment(reference.documentName, reference.displayTime)} · segment #${reference.sequenceId}`);
+      lines.push(`[${reference.id}]: ${reportReferenceSourceLabel(reference)}`);
     }
   }
   return `${lines.join('\n').trim()}\n`;
@@ -209,7 +209,7 @@ export function reportToHtml(report: MeetingReport, wordCompatible = false, opti
   const qa = profile === 'internal' ? internalQaHtml(report) : '';
   const references = includeReferences
     ? `<section class="references"><h2>${escapeHtml(referencesTitle(report))}</h2><ol class="refs">${report.references.map((reference) => `
-    <li id="ref-${reference.id}"><strong>[${reference.id}]</strong> ${escapeHtml(reference.documentName)} · ${escapeHtml(formatSourceMoment(reference.documentName, reference.displayTime))} · segment #${reference.sequenceId}</li>`).join('')}</ol></section>`
+    <li id="ref-${reference.id}"><strong>[${reference.id}]</strong> ${escapeHtml(reportReferenceSourceLabel(reference))}</li>`).join('')}</ol></section>`
     : '';
   const officeNamespaces = wordCompatible ? ' xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"' : '';
   return `<!doctype html>
@@ -324,10 +324,21 @@ function reportMeta(report: MeetingReport): string {
   const prepared = Number.isNaN(date.getTime())
     ? ''
     : new Intl.DateTimeFormat(report.language === 'tr' ? 'tr-TR' : 'en-GB', { year: 'numeric', month: 'long', day: 'numeric' }).format(date);
+  const noteCount = report.noteSourceCount ?? 0;
   if (report.language === 'tr') {
-    return `${report.sourceCount} seçili toplantı oturumu${prepared ? ` · Hazırlanma: ${prepared}` : ''}`;
+    return `${report.sourceCount} seçili toplantı oturumu${noteCount ? ` · ${noteCount} toplantı notu` : ''}${prepared ? ` · Hazırlanma: ${prepared}` : ''}`;
   }
-  return `${report.sourceCount} selected meeting session${report.sourceCount === 1 ? '' : 's'}${prepared ? ` · Prepared: ${prepared}` : ''}`;
+  return `${report.sourceCount} selected meeting session${report.sourceCount === 1 ? '' : 's'}${noteCount ? ` · ${noteCount} meeting note${noteCount === 1 ? '' : 's'}` : ''}${prepared ? ` · Prepared: ${prepared}` : ''}`;
+}
+
+function reportReferenceSourceLabel(reference: ReportReference): string {
+  if (reference.sourceType === 'meeting-note') {
+    const parts = [`Meeting note: ${reference.documentName}`];
+    if (reference.sourceDate) parts.push(reference.sourceDate);
+    if (reference.sourceSection) parts.push(reference.sourceSection);
+    return parts.join(' · ');
+  }
+  return `${reference.documentName} · ${formatSourceMoment(reference.documentName, reference.displayTime)} · segment #${reference.sequenceId}`;
 }
 
 function referenceSuffix(referenceIds: number[]): string {
