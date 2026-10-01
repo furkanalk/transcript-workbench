@@ -15,7 +15,15 @@ export async function buildReportDocx(report: MeetingReport, profile: ExportProf
     entry('word/styles.xml', stylesXml()),
     entry('word/_rels/document.xml.rels', documentRelsXml()),
   ];
-  return new Blob([buildStoredZip(entries)], {
+  const zipBytes = buildStoredZip(entries);
+  // BlobPart requires an ArrayBuffer-backed view. In newer TypeScript DOM typings,
+  // a plain Uint8Array is typed as Uint8Array<ArrayBufferLike>, which may also
+  // reference SharedArrayBuffer and is therefore rejected by the Blob constructor.
+  // Copy into a concrete ArrayBuffer so the BlobPart type is unambiguous.
+  const zipBuffer = new ArrayBuffer(zipBytes.byteLength);
+  new Uint8Array(zipBuffer).set(zipBytes);
+
+  return new Blob([zipBuffer], {
     type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   });
 }
